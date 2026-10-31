@@ -2,10 +2,10 @@
 
 import numpy as np
 import pytest
-from aether_stream.backends.gguf_backend import GGUFBackend
-from aether_stream.models.attention import AttentionWeights, DiTAttention
-from aether_stream.models.dit_block import DiTBlock, DiTBlockWeights, MLPWeights
-from aether_stream.models.rotary import RotaryEmbedding3D
+from phobos_stream.backends.gguf_backend import GGUFBackend
+from phobos_stream.models.attention import AttentionWeights, DiTAttention
+from phobos_stream.models.dit_block import DiTBlock, DiTBlockWeights, MLPWeights
+from phobos_stream.models.rotary import RotaryEmbedding3D
 
 
 def test_rotary_embedding_3d() -> None:

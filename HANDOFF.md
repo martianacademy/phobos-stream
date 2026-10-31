@@ -1,7 +1,7 @@
 # Project Handoff & Architecture Guide 🌌
 
-**Project:** `AetherStream`  
-**GitHub Repository:** [https://github.com/martianacademy/aether-stream](https://github.com/martianacademy/aether-stream)  
+**Project:** `PhobosStream`  
+**GitHub Repository:** [https://github.com/martianacademy/phobos-stream](https://github.com/martianacademy/phobos-stream)  
 **Target Hardware:** Universal (Apple Silicon M1/M2/M3/M4 via MLX, NVIDIA GeForce RTX via CUDA, AMD ROCm, and GGUF/CPU)  
 **Target Models:** Alibaba Wan2.1 (14B), Black Forest Labs FLUX.1 (12B), Tencent HunyuanVideo (13B), THUDM CogVideoX  
 **License:** MIT (100% Free & Open-Source)
@@ -10,20 +10,20 @@
 
 ## 🎯 Executive Summary
 
-`AetherStream` is a universal zero-VRAM diffusion streaming engine created to run massive **12B–20B+ Video and Image Diffusion Transformers (DiTs)** on consumer hardware that would otherwise experience Out-Of-Memory (OOM) crashes.
+`PhobosStream` is a universal zero-VRAM diffusion streaming engine created to run massive **12B–20B+ Video and Image Diffusion Transformers (DiTs)** on consumer hardware that would otherwise experience Out-Of-Memory (OOM) crashes.
 
-By executing **3-Stage Sequential Offloading** (Text Encoder -> DiT Blocks -> VAE) combined with **Zero-Copy `mmap` Block-by-Block Streaming**, AetherStream reduces peak VRAM requirements from **>28 GB down to <800 MB** (>97% memory reduction), enabling professional video generation on 16GB/24GB Apple Silicon Macs and 8GB/12GB RTX GPUs.
+By executing **3-Stage Sequential Offloading** (Text Encoder -> DiT Blocks -> VAE) combined with **Zero-Copy `mmap` Block-by-Block Streaming**, PhobosStream reduces peak VRAM requirements from **>28 GB down to <800 MB** (>97% memory reduction), enabling professional video generation on 16GB/24GB Apple Silicon Macs and 8GB/12GB RTX GPUs.
 
 ---
 
 ## 🏗️ Codebase Directory Structure
 
 ```
-aether-stream/
+phobos-stream/
 ├── pyproject.toml              # Build configuration, dependencies, and CLI entrypoints
 ├── README.md                   # Complete architectural guide, benchmarks, and API reference
 ├── HANDOFF.md                  # Developer handoff documentation (this file)
-├── src/aether_stream/
+├── src/phobos_stream/
 │   ├── types.py                # GenerationConfig, ModelArchitecture, BackendType schemas
 │   ├── cli.py                  # CLI commands (`serve`, `generate`, `benchmark`)
 │   ├── backends/
@@ -67,7 +67,7 @@ aether-stream/
 ### 1. Benchmark Telemetry (`examples/benchmark_streaming.py`)
 Tested with 16 simulated DiT blocks (2048 hidden dimension, 720p 25-frame video latents):
 
-| Metric | Monolithic Baseline | AetherStream (MLX Metal) | Impact |
+| Metric | Monolithic Baseline | PhobosStream (MLX Metal) | Impact |
 | :--- | :--- | :--- | :--- |
 | **Peak VRAM / Unified RAM**| **28.4 GB (OOM Crash)**| **788.11 MB** | **>97% RAM Reduction!** |
 | **Stage 1 (Text Encoding)** | 11.2 GB persistent | **0.73 ms** (Instantly freed) | Memory reused for DiT |
@@ -87,7 +87,7 @@ Tested with 16 simulated DiT blocks (2048 hidden dimension, 720p 25-frame video 
 
 ### 1. Activate Environment
 ```bash
-cd ~/Documents/aether-stream
+cd ~/Documents/phobos-stream
 source .venv/bin/activate
 ```
 
@@ -103,7 +103,7 @@ python examples/benchmark_streaming.py
 
 ### 4. Start the OpenAI / Sora-Compatible API Gateway
 ```bash
-aether-stream serve --port 8088 --backend auto
+phobos-stream serve --port 8088 --backend auto
 ```
 
 ### 5. Test Live Server Integration
@@ -112,14 +112,14 @@ python examples/test_live_server.py
 ```
 
 ### 6. ComfyUI Integration Status
-- **Dedicated Repo:** [https://github.com/martianacademy/ComfyUI-AetherStream](https://github.com/martianacademy/ComfyUI-AetherStream)
+- **Dedicated Repo:** [https://github.com/martianacademy/ComfyUI-PhobosStream](https://github.com/martianacademy/ComfyUI-PhobosStream)
 - **Official ComfyUI Registry PR:** [Comfy-Org/ComfyUI-Manager #3453](https://github.com/Comfy-Org/ComfyUI-Manager/pull/3453)
-- **Local Adapter Location:** `~/Documents/aether-stream/ComfyUI-AetherStream`
-- **Installed Symlink:** `/Users/suru.martian/ComfyUI-Installs/ComfyUI/ComfyUI/custom_nodes/ComfyUI-AetherStream`
+- **Local Adapter Location:** `~/Documents/phobos-stream/ComfyUI-PhobosStream`
+- **Installed Symlink:** `/Users/suru.martian/ComfyUI-Installs/ComfyUI/ComfyUI/custom_nodes/ComfyUI-PhobosStream`
 - **Nodes Registered:**
-  - `AetherStreamLoader`: `🌌 AetherStream Model Loader (Zero-VRAM)`
-  - `AetherStreamSampler`: `⚡ AetherStream Diffusion Sampler (Disk-Stream)`
-  - `AetherStreamVAEDecode`: `🎞️ AetherStream VAE Decoder`
+  - `PhobosStreamLoader`: `🌌 PhobosStream Model Loader (Zero-VRAM)`
+  - `PhobosStreamSampler`: `⚡ PhobosStream Diffusion Sampler (Disk-Stream)`
+  - `PhobosStreamVAEDecode`: `🎞️ PhobosStream VAE Decoder`
 - **Output Compatibility:** Emits standard `(Batch, H, W, 3)` `IMAGE` tensors compatible with standard ComfyUI `SaveImage` and `Video Combine` nodes.
 
 ---

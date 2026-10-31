@@ -2,10 +2,10 @@
 
 import numpy as np
 import pytest
-from aether_stream.pipeline.scheduler import FlowMatchingScheduler
-from aether_stream.pipeline.stream_engine import AetherStreamEngine
-from aether_stream.storage.layout import ModelShardsManifest
-from aether_stream.types import BackendType, GenerationConfig
+from phobos_stream.pipeline.scheduler import FlowMatchingScheduler
+from phobos_stream.pipeline.stream_engine import PhobosStreamEngine
+from phobos_stream.storage.layout import ModelShardsManifest
+from phobos_stream.types import BackendType, GenerationConfig
 
 
 def test_flow_matching_scheduler() -> None:
@@ -20,14 +20,14 @@ def test_flow_matching_scheduler() -> None:
     assert next_sample.shape == (2, 4)
 
 
-def test_aether_stream_engine_generate() -> None:
+def test_phobos_stream_engine_generate() -> None:
     manifest = ModelShardsManifest(
         model_name="test-wan2.1",
         architecture="wan2.1",
         num_blocks=2,
         hidden_size=64,
     )
-    engine = AetherStreamEngine(manifest=manifest, backend_type=BackendType.CPU)
+    engine = PhobosStreamEngine(manifest=manifest, backend_type=BackendType.CPU)
 
     config = GenerationConfig(
         prompt="A serene mountain lake at sunrise",

@@ -2,9 +2,9 @@
 
 import numpy as np
 import pytest
-from aether_stream.backends.factory import get_backend
-from aether_stream.backends.gguf_backend import GGUFBackend
-from aether_stream.types import BackendType
+from phobos_stream.backends.factory import get_backend
+from phobos_stream.backends.gguf_backend import GGUFBackend
+from phobos_stream.types import BackendType
 
 
 def test_gguf_backend_basic_math() -> None:

@@ -1,4 +1,4 @@
-"""Live integration test testing AetherStream API gateway."""
+"""Live integration test testing PhobosStream API gateway."""
 
 import subprocess
 import sys
@@ -8,13 +8,13 @@ import httpx
 
 def test_live_server() -> None:
     port = 8089
-    print(f"[*] Starting AetherStream API server on port {port}...")
+    print(f"[*] Starting PhobosStream API server on port {port}...")
     proc = subprocess.Popen(
         [
             sys.executable,
             "-m",
             "uvicorn",
-            "aether_stream.server.app:create_app",
+            "phobos_stream.server.app:create_app",
             "--factory",
             "--port",
             str(port),

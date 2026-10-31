@@ -2,9 +2,9 @@
 
 from fastapi.testclient import TestClient
 import pytest
-from aether_stream.server.app import create_app
-from aether_stream.storage.layout import ModelShardsManifest
-from aether_stream.types import BackendType
+from phobos_stream.server.app import create_app
+from phobos_stream.storage.layout import ModelShardsManifest
+from phobos_stream.types import BackendType
 
 
 @pytest.fixture

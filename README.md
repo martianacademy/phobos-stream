@@ -1,23 +1,23 @@
-# AetherStream 🌌
+# PhobosStream 🌌
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://www.python.org/)
 [![Backends](https://img.shields.io/badge/Backends-MLX%20•%20CUDA%20•%20ROCm%20•%20GGUF-purple.svg)]()
 [![Tests Passing](https://img.shields.io/badge/Tests-15%20Passing-success.svg)]()
 
-**AetherStream** is a universal, zero-VRAM diffusion inference engine designed to stream massive **12B–20B+ Video and Image Diffusion Transformers (DiTs)** — including **Alibaba Wan2.1 (14B)**, **Black Forest Labs FLUX.1 (12B)**, and **Tencent HunyuanVideo (13B)** — across consumer hardware.
+**PhobosStream** is a universal, zero-VRAM diffusion inference engine designed to stream massive **12B–20B+ Video and Image Diffusion Transformers (DiTs)** — including **Alibaba Wan2.1 (14B)**, **Black Forest Labs FLUX.1 (12B)**, and **Tencent HunyuanVideo (13B)** — across consumer hardware.
 
-By orchestrating **3-Stage Sequential Offloading** and **Zero-Copy `mmap` Block-by-Block Streaming**, AetherStream enables consumer **16GB / 24GB Apple Silicon Macs** and **8GB / 12GB NVIDIA GeForce RTX GPUs** to generate professional-grade videos and images without Out-Of-Memory (OOM) crashes.
+By orchestrating **3-Stage Sequential Offloading** and **Zero-Copy `mmap` Block-by-Block Streaming**, PhobosStream enables consumer **16GB / 24GB Apple Silicon Macs** and **8GB / 12GB NVIDIA GeForce RTX GPUs** to generate professional-grade videos and images without Out-Of-Memory (OOM) crashes.
 
 ---
 
-## 💡 Why AetherStream?
+## 💡 Why PhobosStream?
 
 Frontier video generation models (Wan2.1, HunyuanVideo) and photorealistic image generators (FLUX.1) require between **28 GB to 48 GB of active VRAM/Unified Memory**. Consumer laptops and desktop workstations crash instantly upon loading these models.
 
 Traditional workarounds force heavy 2-bit or 3-bit quantization, degrading visual quality and frame coherence.
 
-**AetherStream provides a different solution:**
+**PhobosStream provides a different solution:**
 
 1. **Stage-Wise Pipeline Offloading:** Text Encoders (T5-XXL / CLIP ~12GB) and VAE decoders are loaded sequentially, executed, and immediately evicted from memory.
 2. **Block-by-Block Zero-Copy `mmap` Streaming:** The core Diffusion Transformer (DiT) runs block-by-block. Only the active transformer block resides in memory, while the rest stay mapped to the NVMe SSD.
@@ -29,7 +29,7 @@ Traditional workarounds force heavy 2-bit or 3-bit quantization, degrading visua
 
 *Tested on Apple Silicon Metal GPU (2048-dim, 16 blocks, 720p 25-frame video latents):*
 
-| Metric | Monolithic Resident Baseline | AetherStream (Streaming) | Impact |
+| Metric | Monolithic Resident Baseline | PhobosStream (Streaming) | Impact |
 | :--- | :--- | :--- | :--- |
 | **Peak VRAM / Memory** | **28.4 GB (OOM Crash)** | **788.11 MB** | **>97% Memory Reduction!** |
 | **Supported Hardware** | Enterprise 48GB–80GB GPUs | 16GB/24GB Macs, RTX 3060/4060 | Consumer accessible |
@@ -50,7 +50,7 @@ flowchart TD
     end
 
     subgraph STAGE2["Stage 2: Iterative DiT Denoising Loop"]
-        EMB --> DIT["AetherStream DiT Engine"]
+        EMB --> DIT["PhobosStream DiT Engine"]
         NVME[("NVMe SSD (Safetensors / GGUF)")] ==>|"mmap Zero-Copy Stream"| BLK["Block N (In Memory: ~120MB)"]
         BLK --> ATTR["Self-Attention + 3D RoPE"]
         ATTR --> CRSS["Cross-Attention (Text Context)"]
@@ -70,7 +70,7 @@ flowchart TD
 
 ## 🚀 Supported Models & Architectures
 
-| Model | Modality | Parameters | Native VRAM | AetherStream Peak RAM |
+| Model | Modality | Parameters | Native VRAM | PhobosStream Peak RAM |
 | :--- | :--- | :--- | :--- | :--- |
 | **Alibaba Wan2.1** | Text-to-Video | **14B** | ~32 GB | **< 1.2 GB** |
 | **Black Forest Labs FLUX.1** | Text-to-Image | **12B** | ~24 GB | **< 850 MB** |
@@ -84,8 +84,8 @@ flowchart TD
 ### 1. Installation
 
 ```bash
-git clone https://github.com/martianacademy/aether-stream.git
-cd aether-stream
+git clone https://github.com/martianacademy/phobos-stream.git
+cd phobos-stream
 
 # Setup virtual environment with Python 3.10+
 uv venv --python 3.12
@@ -110,7 +110,7 @@ python examples/benchmark_streaming.py
 ### 4. Launch OpenAI / Sora-Compatible REST & WebSocket API
 
 ```bash
-aether-stream serve --port 8088 --backend auto
+phobos-stream serve --port 8088 --backend auto
 ```
 
 Or test with the automated client:
@@ -122,26 +122,26 @@ python examples/test_live_server.py
 
 ## 🎨 ComfyUI Native Custom Node Integration
 
-AetherStream includes a first-class **ComfyUI Custom Node Extension** (`ComfyUI-AetherStream`) allowing visual drag-and-drop workflows on consumer hardware without Out-Of-Memory crashes!
+PhobosStream includes a first-class **ComfyUI Custom Node Extension** (`ComfyUI-PhobosStream`) allowing visual drag-and-drop workflows on consumer hardware without Out-Of-Memory crashes!
 
 ### 1. Installation into ComfyUI
 ```bash
 # Symlink directly into your ComfyUI custom_nodes directory:
-ln -s ~/Documents/aether-stream/ComfyUI-AetherStream ~/ComfyUI/custom_nodes/
+ln -s ~/Documents/phobos-stream/ComfyUI-PhobosStream ~/ComfyUI/custom_nodes/
 ```
 
-### 2. Available ComfyUI Nodes (Under `AetherStream` Category)
+### 2. Available ComfyUI Nodes (Under `PhobosStream` Category)
 
 ```mermaid
 graph LR
-    L["🌌 AetherStream Loader<br/>(Wan2.1 / FLUX.1 / Hunyuan)"] -->|"aether_model"| S["⚡ AetherStream Sampler<br/>(Prompt, Steps, Seed)"]
-    S -->|"latents"| V["🎞️ AetherStream VAE Decoder"]
+    L["🌌 PhobosStream Loader<br/>(Wan2.1 / FLUX.1 / Hunyuan)"] -->|"aether_model"| S["⚡ PhobosStream Sampler<br/>(Prompt, Steps, Seed)"]
+    S -->|"latents"| V["🎞️ PhobosStream VAE Decoder"]
     V -->|"images (IMAGE)"| P["Preview / Save Image / Video"]
 ```
 
-* **`🌌 AetherStream Model Loader (Zero-VRAM)`**: Configures architecture (Wan2.1, FLUX.1, HunyuanVideo), hidden dimension, and execution backend (`MLX`, `CUDA`, `GGUF`, `CPU`).
-* **`⚡ AetherStream Diffusion Sampler (Disk-Stream)`**: Executes 3-stage sequential offloading and block-by-block NVMe streaming. Outputs standard ComfyUI `IMAGE` tensors compatible with `SaveImage` and `VHS_VideoCombine`.
-* **`🎞️ AetherStream VAE Decoder`**: Modular latent-to-pixel reconstruction node.
+* **`🌌 PhobosStream Model Loader (Zero-VRAM)`**: Configures architecture (Wan2.1, FLUX.1, HunyuanVideo), hidden dimension, and execution backend (`MLX`, `CUDA`, `GGUF`, `CPU`).
+* **`⚡ PhobosStream Diffusion Sampler (Disk-Stream)`**: Executes 3-stage sequential offloading and block-by-block NVMe streaming. Outputs standard ComfyUI `IMAGE` tensors compatible with `SaveImage` and `VHS_VideoCombine`.
+* **`🎞️ PhobosStream VAE Decoder`**: Modular latent-to-pixel reconstruction node.
 
 ---
 

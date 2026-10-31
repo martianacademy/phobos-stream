@@ -2,11 +2,11 @@
 
 import numpy as np
 import pytest
-from aether_stream.adapters.factory import get_adapter
-from aether_stream.adapters.flux_adapter import FluxAdapter
-from aether_stream.adapters.hunyuan_adapter import HunyuanAdapter
-from aether_stream.adapters.wan_adapter import WanAdapter
-from aether_stream.backends.gguf_backend import GGUFBackend
+from phobos_stream.adapters.factory import get_adapter
+from phobos_stream.adapters.flux_adapter import FluxAdapter
+from phobos_stream.adapters.hunyuan_adapter import HunyuanAdapter
+from phobos_stream.adapters.wan_adapter import WanAdapter
+from phobos_stream.backends.gguf_backend import GGUFBackend
 
 
 def test_adapter_factory() -> None:

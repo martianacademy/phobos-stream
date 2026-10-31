@@ -1,9 +1,9 @@
-"""Benchmark AetherStream's zero-VRAM diffusion streaming engine."""
+"""Benchmark PhobosStream's zero-VRAM diffusion streaming engine."""
 
 import time
-from aether_stream.pipeline.stream_engine import AetherStreamEngine
-from aether_stream.storage.layout import ModelShardsManifest
-from aether_stream.types import BackendType, GenerationConfig
+from phobos_stream.pipeline.stream_engine import PhobosStreamEngine
+from phobos_stream.storage.layout import ModelShardsManifest
+from phobos_stream.types import BackendType, GenerationConfig
 
 
 def run_benchmark() -> None:
@@ -23,7 +23,7 @@ def run_benchmark() -> None:
     )
 
     print(f"[*] Initializing Engine [Architecture: Wan2.1 | Blocks: {num_blocks} | Hidden: {hidden_size}]...")
-    engine = AetherStreamEngine(manifest=manifest, backend_type=BackendType.AUTO)
+    engine = PhobosStreamEngine(manifest=manifest, backend_type=BackendType.AUTO)
     print(f"[*] Active Backend: {engine.backend.name.upper()} (Apple Silicon Metal / Hardware Accelerated)")
 
     config = GenerationConfig(

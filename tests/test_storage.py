@@ -4,9 +4,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 import safetensors.numpy
-from aether_stream.storage.layout import BlockMetadata, ModelShardsManifest
-from aether_stream.storage.mmap_loader import MMapTensorLoader
-from aether_stream.storage.sharder import DiffusionSharder
+from phobos_stream.storage.layout import BlockMetadata, ModelShardsManifest
+from phobos_stream.storage.mmap_loader import MMapTensorLoader
+from phobos_stream.storage.sharder import DiffusionSharder
 
 
 def test_mmap_tensor_loader_safetensors(tmp_path: Path) -> None:

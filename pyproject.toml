@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "aether-stream"
+name = "phobos-stream"
 version = "0.1.0"
 description = "Universal Zero-VRAM Video & Image Diffusion Streaming Engine (MLX • CUDA • ROCm • GGUF)"
 readme = "README.md"
@@ -34,7 +34,7 @@ dev = [
 ]
 
 [project.scripts]
-aether-stream = "aether_stream.cli:main"
+phobos-stream = "phobos_stream.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -2,15 +2,15 @@
 
 import numpy as np
 import pytest
-from aether_stream.integrations.comfyui.nodes import (
-    AetherStreamLoaderNode,
-    AetherStreamSamplerNode,
-    AetherStreamVAEDecodeNode,
+from phobos_stream.integrations.comfyui.nodes import (
+    PhobosStreamLoaderNode,
+    PhobosStreamSamplerNode,
+    PhobosStreamVAEDecodeNode,
 )
 
 
 def test_comfyui_loader_node() -> None:
-    loader = AetherStreamLoaderNode()
+    loader = PhobosStreamLoaderNode()
     result = loader.load_model(
         model_name="test-wan2.1",
         architecture="wan2.1",
@@ -25,7 +25,7 @@ def test_comfyui_loader_node() -> None:
 
 
 def test_comfyui_sampler_and_vae_decode() -> None:
-    loader = AetherStreamLoaderNode()
+    loader = PhobosStreamLoaderNode()
     model_dict = loader.load_model(
         model_name="test-wan2.1",
         architecture="wan2.1",
@@ -34,7 +34,7 @@ def test_comfyui_sampler_and_vae_decode() -> None:
         hidden_size=64,
     )[0]
 
-    sampler = AetherStreamSamplerNode()
+    sampler = PhobosStreamSamplerNode()
     images, latents = sampler.sample(
         aether_model=model_dict,
         prompt="A serene mountain valley with crystal streams",
@@ -51,6 +51,6 @@ def test_comfyui_sampler_and_vae_decode() -> None:
     assert "samples" in latents
 
     # Test VAE Decode
-    decoder = AetherStreamVAEDecodeNode()
+    decoder = PhobosStreamVAEDecodeNode()
     decoded_images = decoder.decode(latents, model_dict)[0]
     assert decoded_images is not None
