@@ -70,7 +70,7 @@ def benchmark_z_image_turbo() -> None:
     # 5. Model Sampling setup & Empty Latent
     print("\n[5/6] Setting up AuraFlow shift & 1024x1024 empty latent...")
     aura_flow = ModelSamplingAuraFlow()
-    shifted_model, = aura_flow.patch(model, 3.0)
+    shifted_model, = aura_flow.patch_aura(model, 3.0)
 
     latent = {
         "samples": torch.zeros([1, 16, 1024 // 8, 1024 // 8], device="cpu", dtype=torch.float32),
