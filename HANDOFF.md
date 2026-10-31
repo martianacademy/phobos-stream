@@ -111,6 +111,15 @@ aether-stream serve --port 8088 --backend auto
 python examples/test_live_server.py
 ```
 
+### 6. ComfyUI Integration Status
+- **Adapter Location:** `~/Documents/aether-stream/ComfyUI-AetherStream`
+- **Installed Symlink:** `/Users/suru.martian/ComfyUI-Installs/ComfyUI/ComfyUI/custom_nodes/ComfyUI-AetherStream`
+- **Nodes Registered:**
+  - `AetherStreamLoader`: `🌌 AetherStream Model Loader (Zero-VRAM)`
+  - `AetherStreamSampler`: `⚡ AetherStream Diffusion Sampler (Disk-Stream)`
+  - `AetherStreamVAEDecode`: `🎞️ AetherStream VAE Decoder`
+- **Output Compatibility:** Emits standard `(Batch, H, W, 3)` `IMAGE` tensors compatible with standard ComfyUI `SaveImage` and `Video Combine` nodes.
+
 ---
 
 ## 🧭 Future Roadmap

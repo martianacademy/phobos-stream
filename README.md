@@ -120,6 +120,31 @@ python examples/test_live_server.py
 
 ---
 
+## 🎨 ComfyUI Native Custom Node Integration
+
+AetherStream includes a first-class **ComfyUI Custom Node Extension** (`ComfyUI-AetherStream`) allowing visual drag-and-drop workflows on consumer hardware without Out-Of-Memory crashes!
+
+### 1. Installation into ComfyUI
+```bash
+# Symlink directly into your ComfyUI custom_nodes directory:
+ln -s ~/Documents/aether-stream/ComfyUI-AetherStream ~/ComfyUI/custom_nodes/
+```
+
+### 2. Available ComfyUI Nodes (Under `AetherStream` Category)
+
+```mermaid
+graph LR
+    L["🌌 AetherStream Loader<br/>(Wan2.1 / FLUX.1 / Hunyuan)"] -->|"aether_model"| S["⚡ AetherStream Sampler<br/>(Prompt, Steps, Seed)"]
+    S -->|"latents"| V["🎞️ AetherStream VAE Decoder"]
+    V -->|"images (IMAGE)"| P["Preview / Save Image / Video"]
+```
+
+* **`🌌 AetherStream Model Loader (Zero-VRAM)`**: Configures architecture (Wan2.1, FLUX.1, HunyuanVideo), hidden dimension, and execution backend (`MLX`, `CUDA`, `GGUF`, `CPU`).
+* **`⚡ AetherStream Diffusion Sampler (Disk-Stream)`**: Executes 3-stage sequential offloading and block-by-block NVMe streaming. Outputs standard ComfyUI `IMAGE` tensors compatible with `SaveImage` and `VHS_VideoCombine`.
+* **`🎞️ AetherStream VAE Decoder`**: Modular latent-to-pixel reconstruction node.
+
+---
+
 ## 🔌 API Gateway Usage
 
 ### Generate Video (`POST /v1/videos/generations`)
