@@ -112,7 +112,9 @@ python examples/test_live_server.py
 ```
 
 ### 6. ComfyUI Integration Status
-- **Adapter Location:** `~/Documents/aether-stream/ComfyUI-AetherStream`
+- **Dedicated Repo:** [https://github.com/martianacademy/ComfyUI-AetherStream](https://github.com/martianacademy/ComfyUI-AetherStream)
+- **Official ComfyUI Registry PR:** [Comfy-Org/ComfyUI-Manager #3453](https://github.com/Comfy-Org/ComfyUI-Manager/pull/3453)
+- **Local Adapter Location:** `~/Documents/aether-stream/ComfyUI-AetherStream`
 - **Installed Symlink:** `/Users/suru.martian/ComfyUI-Installs/ComfyUI/ComfyUI/custom_nodes/ComfyUI-AetherStream`
 - **Nodes Registered:**
   - `AetherStreamLoader`: `🌌 AetherStream Model Loader (Zero-VRAM)`
