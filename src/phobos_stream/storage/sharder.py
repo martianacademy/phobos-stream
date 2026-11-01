@@ -1,11 +1,20 @@
 """Model sharder and virtual byte-range indexer for zero-copy streaming."""
 
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import os
 import safetensors.numpy
 from phobos_stream.storage.layout import BlockMetadata, ModelShardsManifest
 from phobos_stream.storage.mmap_loader import MMapTensorLoader
+
+
+BLOCK_PREFIXES: Tuple[str, ...] = (
+    "transformer_blocks.",
+    "double_blocks.",
+    "single_blocks.",
+    "blocks.",
+    "layers.",
+)
 
 
 class DiffusionSharder:
@@ -21,44 +30,68 @@ class DiffusionSharder:
         hidden_size: int = 4096,
     ) -> ModelShardsManifest:
         """Create a zero-copy virtual manifest from existing monolithic safetensors."""
-        safetensor_files = list(self.model_dir.glob("*.safetensors"))
+        if self.model_dir.is_file() and self.model_dir.suffix == ".safetensors":
+            safetensor_files = [self.model_dir]
+        else:
+            safetensor_files = sorted(self.model_dir.glob("*.safetensors"))
+
         if not safetensor_files:
             raise FileNotFoundError(f"No safetensors found in {self.model_dir}")
 
         blocks: Dict[int, BlockMetadata] = {}
+        single_blocks_temp: Dict[int, Tuple[str, List[str], int]] = {}
         text_encoder_path: Optional[str] = None
         vae_path: Optional[str] = None
 
         for sf in safetensor_files:
             fname = sf.name.lower()
-            if "text_encoder" in fname or "t5" in fname or "clip" in fname:
+            if "text_encoder" in fname or "t5" in fname or "clip" in fname or "qwen" in fname:
                 text_encoder_path = str(sf.resolve())
-            elif "vae" in fname:
+            elif "vae" in fname or fname == "ae.safetensors":
                 vae_path = str(sf.resolve())
 
-            loader = MMapTensorLoader(sf)
-            tensor_names = loader.get_tensor_names()
-            loader.close()
+            with MMapTensorLoader(sf) as loader:
+                tensor_names = loader.get_tensor_names()
+                for t_name in tensor_names:
+                    for prefix in BLOCK_PREFIXES:
+                        if prefix in t_name:
+                            parts = t_name.split(prefix, 1)[1].split(".")
+                            if parts[0].isdigit():
+                                raw_idx = int(parts[0])
+                                t_bytes = loader.get_tensor_byte_size(t_name)
+                                if prefix == "single_blocks.":
+                                    if raw_idx not in single_blocks_temp:
+                                        single_blocks_temp[raw_idx] = (str(sf.resolve()), [], 0)
+                                    fn, t_list, b_sz = single_blocks_temp[raw_idx]
+                                    t_list.append(t_name)
+                                    single_blocks_temp[raw_idx] = (fn, t_list, b_sz + t_bytes)
+                                else:
+                                    if raw_idx not in blocks:
+                                        blocks[raw_idx] = BlockMetadata(
+                                            block_id=raw_idx,
+                                            filename=str(sf.resolve()),
+                                            tensor_names=[],
+                                            byte_size=0,
+                                        )
+                                    blocks[raw_idx].tensor_names.append(t_name)
+                                    blocks[raw_idx].byte_size += t_bytes
+                            break
 
-            # Group by transformer block index (e.g., 'blocks.0.', 'transformer_blocks.0.')
-            for t_name in tensor_names:
-                for prefix in ("blocks.", "transformer_blocks.", "double_blocks.", "single_blocks."):
-                    if prefix in t_name:
-                        parts = t_name.split(prefix)[1].split(".")
-                        if parts[0].isdigit():
-                            b_id = int(parts[0])
-                            if b_id not in blocks:
-                                blocks[b_id] = BlockMetadata(
-                                    block_id=b_id,
-                                    filename=str(sf.resolve()),
-                                    tensor_names=[],
-                                    byte_size=0,
-                                )
-                            blocks[b_id].tensor_names.append(t_name)
-                        break
+        # Append single_blocks after double_blocks so they don't overwrite double_blocks[0..N]
+        if single_blocks_temp:
+            offset = (max(blocks.keys()) + 1) if blocks else 0
+            for raw_idx in sorted(single_blocks_temp.keys()):
+                fn, t_list, b_sz = single_blocks_temp[raw_idx]
+                b_id = offset + raw_idx
+                blocks[b_id] = BlockMetadata(
+                    block_id=b_id,
+                    filename=fn,
+                    tensor_names=t_list,
+                    byte_size=b_sz,
+                )
 
         manifest = ModelShardsManifest(
-            model_name=self.model_dir.name,
+            model_name=self.model_dir.stem if self.model_dir.is_file() else self.model_dir.name,
             architecture=architecture,
             num_blocks=len(blocks) if blocks else 1,
             hidden_size=hidden_size,
@@ -76,9 +109,8 @@ class DiffusionSharder:
 
         new_blocks: Dict[int, BlockMetadata] = {}
         for b_id, meta in manifest.blocks.items():
-            loader = MMapTensorLoader(Path(meta.filename))
-            block_tensors = {t_name: loader.read_tensor(t_name) for t_name in meta.tensor_names}
-            loader.close()
+            with MMapTensorLoader(Path(meta.filename)) as loader:
+                block_tensors = {t_name: loader.read_tensor(t_name, copy=True) for t_name in meta.tensor_names}
 
             shard_file = blocks_dir / f"block_{b_id:03d}.safetensors"
             safetensors.numpy.save_file(block_tensors, str(shard_file))

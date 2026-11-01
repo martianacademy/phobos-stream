@@ -1,4 +1,4 @@
-"""Tests for 3D RoPE, attention, and DiT transformer blocks."""
+"""Tests for 3D RoPE, multi-head attention, and DiT transformer blocks."""
 
 import numpy as np
 import pytest
@@ -17,8 +17,13 @@ def test_rotary_embedding_3d() -> None:
     assert cos.shape == (32, 64)
     assert sin.shape == (32, 64)
 
+    # Verify _rotate_half rotates 2D pairs: (x0, x1) -> (-x1, x0), preserving norm
+    vec = np.array([[[3.0, 4.0, 1.0, -2.0]]], dtype=np.float32)
+    rot = rotary._rotate_half(vec)
+    assert np.allclose(rot, np.array([[[-4.0, 3.0, 2.0, 1.0]]], dtype=np.float32))
 
-def test_dit_block_forward() -> None:
+
+def test_dit_block_forward_and_timestep_conditioning() -> None:
     backend = GGUFBackend(device="cpu")
     dim = 64
     num_heads = 4
@@ -37,10 +42,11 @@ def test_dit_block_forward() -> None:
         v_proj=np.eye(dim, dtype=np.float32),
         out_proj=np.eye(dim, dtype=np.float32),
     )
+    # Test PyTorch-style (out_features, in_features) non-square MLP weights
     mlp = MLPWeights(
-        gate_proj=np.eye(dim, dtype=np.float32),
-        up_proj=np.eye(dim, dtype=np.float32),
-        down_proj=np.eye(dim, dtype=np.float32),
+        gate_proj=np.ones((dim * 2, dim), dtype=np.float32) * 0.05,
+        up_proj=np.ones((dim * 2, dim), dtype=np.float32) * 0.05,
+        down_proj=np.ones((dim, dim * 2), dtype=np.float32) * 0.05,
     )
 
     weights = DiTBlockWeights(
@@ -54,6 +60,10 @@ def test_dit_block_forward() -> None:
 
     x = np.random.randn(1, 16, dim).astype(np.float32)
     context = np.random.randn(1, 8, dim).astype(np.float32)
+    t_emb_1 = np.ones((dim,), dtype=np.float32) * 0.1
+    t_emb_2 = np.ones((dim,), dtype=np.float32) * 2.5
 
-    out = block.forward(x, weights, context=context)
-    assert out.shape == (1, 16, dim)
+    out1 = block.forward(x, weights, context=context, timestep_emb=t_emb_1)
+    out2 = block.forward(x, weights, context=context, timestep_emb=t_emb_2)
+    assert out1.shape == (1, 16, dim)
+    assert not np.allclose(out1, out2)

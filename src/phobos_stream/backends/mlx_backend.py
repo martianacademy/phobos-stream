@@ -39,6 +39,12 @@ class MLXBackend(BaseBackend):
     def matmul(self, a: Any, b: Any) -> Any:
         return mx.matmul(a, b)
 
+    def reshape(self, x: Any, shape: Tuple[int, ...]) -> Any:
+        return mx.reshape(x, shape)
+
+    def swapaxes(self, x: Any, axis1: int, axis2: int) -> Any:
+        return mx.swapaxes(x, axis1, axis2)
+
     def layer_norm(self, x: Any, weight: Any, bias: Optional[Any] = None, eps: float = 1e-5) -> Any:
         mean = mx.mean(x, axis=-1, keepdims=True)
         var = mx.var(x, axis=-1, keepdims=True)
@@ -60,7 +66,7 @@ class MLXBackend(BaseBackend):
         mask: Optional[Any] = None,
     ) -> Any:
         scale_val = scale if scale is not None else 1.0 / (q.shape[-1] ** 0.5)
-        if hasattr(mxf, "scaled_dot_product_attention"):
+        if q.ndim == 4 and hasattr(mxf, "scaled_dot_product_attention"):
             try:
                 return mxf.scaled_dot_product_attention(q, k, v, scale=scale_val, mask=mask)
             except Exception:
@@ -72,6 +78,8 @@ class MLXBackend(BaseBackend):
         return mx.matmul(weights, v)
 
     def convert_from_numpy(self, arr: np.ndarray, dtype: Optional[str] = None) -> Any:
+        if not arr.flags["C_CONTIGUOUS"]:
+            arr = np.ascontiguousarray(arr)
         mlx_arr = mx.array(arr)
         if dtype is not None and hasattr(mx, dtype):
             mlx_arr = mlx_arr.astype(getattr(mx, dtype))
@@ -82,7 +90,7 @@ class MLXBackend(BaseBackend):
         return np.array(tensor)
 
     def synchronize(self) -> None:
-        pass
+        mx.eval()
 
     def empty_cache(self) -> None:
         if hasattr(mx, "clear_cache"):

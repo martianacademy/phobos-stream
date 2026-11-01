@@ -1,7 +1,8 @@
-"""Tests for architecture adapters (Wan2.1, FLUX.1, HunyuanVideo)."""
+"""Tests for architecture adapters (Wan2.1, FLUX.1, HunyuanVideo, CogVideoX)."""
 
 import numpy as np
 import pytest
+from phobos_stream.adapters.cogvideo_adapter import CogVideoXAdapter
 from phobos_stream.adapters.factory import get_adapter
 from phobos_stream.adapters.flux_adapter import FluxAdapter
 from phobos_stream.adapters.hunyuan_adapter import HunyuanAdapter
@@ -14,15 +15,17 @@ def test_adapter_factory() -> None:
     wan = get_adapter("wan2.1", backend)
     flux = get_adapter("flux", backend)
     hunyuan = get_adapter("hunyuan", backend)
+    cogvideo = get_adapter("cogvideox", backend)
 
     assert isinstance(wan, WanAdapter)
     assert isinstance(flux, FluxAdapter)
     assert isinstance(hunyuan, HunyuanAdapter)
+    assert isinstance(cogvideo, CogVideoXAdapter)
 
 
 def test_wan_adapter_extract_weights() -> None:
     backend = GGUFBackend(device="cpu")
-    adapter = WanAdapter(backend)
+    adapter = WanAdapter(backend, hidden_size=64)
 
     raw_tensors = {
         "blocks.0.self_attn.q_proj.weight": np.random.randn(64, 64).astype(np.float32),
@@ -32,3 +35,5 @@ def test_wan_adapter_extract_weights() -> None:
     block_weights = adapter.extract_block_weights(0, raw_tensors)
     assert block_weights.self_attn.q_proj.shape == (64, 64)
     assert block_weights.mlp.gate_proj.shape == (64, 128)
+    # Fallback weights must be non-zero so unsharded blocks actively transform latents
+    assert np.any(block_weights.self_attn.k_proj != 0.0)

@@ -1,15 +1,13 @@
-"""Adapter for Alibaba Wan2.1 (14B / 1.3B) Video Diffusion Transformer."""
+"""Adapter for Alibaba Wan2.1 (14B / 1.3B) and Lumina2 / Z-Image-Turbo DiT models."""
 
-import math
-from typing import Any, Dict, Optional
-import numpy as np
+from typing import Any, Dict
 from phobos_stream.adapters.base import BaseModelAdapter
 from phobos_stream.models.attention import AttentionWeights
 from phobos_stream.models.dit_block import DiTBlockWeights, MLPWeights
 
 
 class WanAdapter(BaseModelAdapter):
-    """Adapter for Wan2.1 video generation DiT models."""
+    """Adapter for Wan2.1 and Lumina2 / Z-Image-Turbo DiT models."""
 
     @property
     def architecture_name(self) -> str:
@@ -20,57 +18,65 @@ class WanAdapter(BaseModelAdapter):
         block_id: int,
         raw_tensors: Dict[str, Any],
     ) -> DiTBlockWeights:
-        """Map Wan2.1 layer tensors into normalized DiTBlockWeights."""
-        prefix = f"blocks.{block_id}."
+        """Map Wan2.1 or Lumina2/Z-Image-Turbo layer tensors into normalized DiTBlockWeights."""
         dim = self.hidden_size
 
-        def get_tensor(suffix: str, default_shape=(64, 64)) -> Any:
-            key = f"{prefix}{suffix}"
-            if key in raw_tensors:
-                return self.backend.convert_from_numpy(raw_tensors[key])
-            for k in raw_tensors:
-                if suffix in k:
-                    return self.backend.convert_from_numpy(raw_tensors[k])
-            # Synthesize fallback identity weight if parsing synthetic shards
-            return self.backend.zeros(default_shape)
-        # Self-Attention
+        # Detect Lumina2 / Z-Image-Turbo fused QKV format ('layers.{block_id}.attention.qkv.weight')
+        lumina_qkv_key = f"layers.{block_id}.attention.qkv.weight"
+        if lumina_qkv_key in raw_tensors:
+            prefix = f"layers.{block_id}."
+            qkv = raw_tensors[lumina_qkv_key]
+            q_np, k_np, v_np = qkv[:dim], qkv[dim : 2 * dim], qkv[2 * dim : 3 * dim]
+            self_attn = AttentionWeights(
+                q_proj=self.backend.convert_from_numpy(q_np),
+                k_proj=self.backend.convert_from_numpy(k_np),
+                v_proj=self.backend.convert_from_numpy(v_np),
+                out_proj=self.resolve_tensor(raw_tensors, block_id, prefix, "attention.out.weight", (dim, dim)),
+            )
+            mlp = MLPWeights(
+                gate_proj=self.resolve_tensor(raw_tensors, block_id, prefix, "feed_forward.w1.weight", (dim * 2, dim)),
+                up_proj=self.resolve_tensor(raw_tensors, block_id, prefix, "feed_forward.w3.weight", (dim * 2, dim)),
+                down_proj=self.resolve_tensor(raw_tensors, block_id, prefix, "feed_forward.w2.weight", (dim, dim * 2)),
+            )
+            return DiTBlockWeights(
+                norm1_weight=self.resolve_tensor(raw_tensors, block_id, prefix, "attention_norm1.weight", (dim,)),
+                self_attn=self_attn,
+                norm2_weight=self.resolve_tensor(raw_tensors, block_id, prefix, "attention_norm2.weight", (dim,)),
+                cross_attn=None,
+                norm3_weight=self.resolve_tensor(raw_tensors, block_id, prefix, "ffn_norm1.weight", (dim,)),
+                mlp=mlp,
+            )
+
+        prefix = f"blocks.{block_id}."
+
+        def get_t(suffix: str, shape):
+            return self.resolve_tensor(raw_tensors, block_id, prefix, suffix, shape)
+
         self_attn = AttentionWeights(
-            q_proj=get_tensor("self_attn.q_proj.weight", (dim, dim)),
-            k_proj=get_tensor("self_attn.k_proj.weight", (dim, dim)),
-            v_proj=get_tensor("self_attn.v_proj.weight", (dim, dim)),
-            out_proj=get_tensor("self_attn.o_proj.weight", (dim, dim)),
+            q_proj=get_t("self_attn.q_proj.weight", (dim, dim)),
+            k_proj=get_t("self_attn.k_proj.weight", (dim, dim)),
+            v_proj=get_t("self_attn.v_proj.weight", (dim, dim)),
+            out_proj=get_t("self_attn.o_proj.weight", (dim, dim)),
         )
 
-        # Cross-Attention
         cross_attn = AttentionWeights(
-            q_proj=get_tensor("cross_attn.q_proj.weight", (dim, dim)),
-            k_proj=get_tensor("cross_attn.k_proj.weight", (dim, dim)),
-            v_proj=get_tensor("cross_attn.v_proj.weight", (dim, dim)),
-            out_proj=get_tensor("cross_attn.o_proj.weight", (dim, dim)),
+            q_proj=get_t("cross_attn.q_proj.weight", (dim, dim)),
+            k_proj=get_t("cross_attn.k_proj.weight", (dim, dim)),
+            v_proj=get_t("cross_attn.v_proj.weight", (dim, dim)),
+            out_proj=get_t("cross_attn.o_proj.weight", (dim, dim)),
         )
 
-        # FFN (SwiGLU)
         mlp = MLPWeights(
-            gate_proj=get_tensor("ffn.gate_proj.weight", (dim, dim * 2)),
-            up_proj=get_tensor("ffn.up_proj.weight", (dim, dim * 2)),
-            down_proj=get_tensor("ffn.down_proj.weight", (dim * 2, dim)),
+            gate_proj=get_t("ffn.gate_proj.weight", (dim, dim * 2)),
+            up_proj=get_t("ffn.up_proj.weight", (dim, dim * 2)),
+            down_proj=get_t("ffn.down_proj.weight", (dim * 2, dim)),
         )
 
         return DiTBlockWeights(
-            norm1_weight=get_tensor("norm1.weight", (dim,)),
+            norm1_weight=get_t("norm1.weight", (dim,)),
             self_attn=self_attn,
-            norm2_weight=get_tensor("norm2.weight", (dim,)),
+            norm2_weight=get_t("norm2.weight", (dim,)),
             cross_attn=cross_attn,
-            norm3_weight=get_tensor("norm3.weight", (dim,)),
+            norm3_weight=get_t("norm3.weight", (dim,)),
             mlp=mlp,
         )
-
-    def format_prompt_embeddings(self, text_tokens: Any) -> Any:
-        return text_tokens
-
-    def compute_timestep_embedding(self, timestep: float, dim: int) -> Any:
-        half = dim // 2
-        freqs = np.exp(-np.log(10000.0) * np.arange(0, half, dtype=np.float32) / half)
-        args = timestep * freqs
-        embedding = np.concatenate([np.cos(args), np.sin(args)], axis=-1)
-        return self.backend.convert_from_numpy(embedding)

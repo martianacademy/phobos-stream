@@ -1,6 +1,7 @@
 """Adapter registry and auto-detection factory."""
 
 from phobos_stream.adapters.base import BaseModelAdapter
+from phobos_stream.adapters.cogvideo_adapter import CogVideoXAdapter
 from phobos_stream.adapters.flux_adapter import FluxAdapter
 from phobos_stream.adapters.hunyuan_adapter import HunyuanAdapter
 from phobos_stream.adapters.wan_adapter import WanAdapter
@@ -20,5 +21,6 @@ def get_adapter(
         return FluxAdapter(backend, hidden_size=hidden_size)
     if "hunyuan" in arch:
         return HunyuanAdapter(backend, hidden_size=hidden_size)
-    # Default to Wan2.1 adapter
+    if "cogvideo" in arch:
+        return CogVideoXAdapter(backend, hidden_size=hidden_size)
     return WanAdapter(backend, hidden_size=hidden_size)

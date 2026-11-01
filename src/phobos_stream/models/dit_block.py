@@ -1,7 +1,7 @@
-"""Universal Diffusion Transformer (DiT) Block with SwiGLU / MoE support."""
+"""Universal Diffusion Transformer (DiT) Block with SwiGLU & AdaLN support."""
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from phobos_stream.backends.base import BaseBackend
 from phobos_stream.models.attention import AttentionWeights, DiTAttention
 
@@ -45,6 +45,30 @@ class DiTBlock:
         if has_cross_attn:
             self.cross_attn_module = DiTAttention(hidden_size, num_heads, backend)
 
+    def _apply_timestep_modulation(
+        self,
+        normed_x: Any,
+        timestep_emb: Optional[Any],
+        ada_scale: Optional[Any],
+    ) -> Any:
+        """Modulate normalized activations with timestep embedding (AdaLN)."""
+        if timestep_emb is None:
+            return normed_x
+
+        t_cond = self.backend.silu(timestep_emb)
+        if ada_scale is not None:
+            t_cond = self.backend.linear(t_cond, ada_scale)
+
+        if len(t_cond.shape) == 1:
+            t_cond = self.backend.reshape(t_cond, (1, 1, -1))
+        elif len(t_cond.shape) == 2:
+            t_cond = self.backend.reshape(t_cond, (t_cond.shape[0], 1, -1))
+
+        # Scale & shift modulation when dimensions align
+        if t_cond.shape[-1] == self.hidden_size:
+            return normed_x * (1.0 + 0.1 * t_cond) + (0.05 * t_cond)
+        return normed_x
+
     def forward(
         self,
         x: Any,
@@ -54,9 +78,10 @@ class DiTBlock:
         cos: Optional[Any] = None,
         sin: Optional[Any] = None,
     ) -> Any:
-        """Forward pass through Self-Attention, Cross-Attention, and MLP."""
-        # 1. Pre-norm Self-Attention
+        """Forward pass through AdaLN Self-Attention, Cross-Attention, and SwiGLU MLP."""
+        # 1. Pre-norm + AdaLN Self-Attention
         norm1 = self.backend.layer_norm(x, weights.norm1_weight)
+        norm1 = self._apply_timestep_modulation(norm1, timestep_emb, weights.ada_scale)
         attn_out = self.self_attn_module.forward(
             norm1,
             weights.self_attn,
@@ -72,12 +97,13 @@ class DiTBlock:
             cross_out = self.cross_attn_module.forward(norm2, weights.cross_attn, context=context)
             x = x + cross_out
 
-        # 3. Feed-Forward MLP (SwiGLU)
+        # 3. Feed-Forward MLP (SwiGLU) with AdaLN modulation
         norm3 = self.backend.layer_norm(x, weights.norm3_weight)
-        gate = self.backend.silu(self.backend.matmul(norm3, weights.mlp.gate_proj))
-        up = self.backend.matmul(norm3, weights.mlp.up_proj)
+        norm3 = self._apply_timestep_modulation(norm3, timestep_emb, None)
+        gate = self.backend.silu(self.backend.linear(norm3, weights.mlp.gate_proj))
+        up = self.backend.linear(norm3, weights.mlp.up_proj)
         mlp_intermediate = gate * up
-        mlp_out = self.backend.matmul(mlp_intermediate, weights.mlp.down_proj)
+        mlp_out = self.backend.linear(mlp_intermediate, weights.mlp.down_proj)
 
         x = x + mlp_out
         return x

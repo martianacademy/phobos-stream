@@ -36,21 +36,25 @@ def test_comfyui_sampler_and_vae_decode() -> None:
 
     sampler = PhobosStreamSamplerNode()
     images, latents = sampler.sample(
-        aether_model=model_dict,
+        phobos_model=model_dict,
         prompt="A serene mountain valley with crystal streams",
-        negative_prompt="",
+        negative_prompt="blurry",
         width=128,
         height=128,
-        num_frames=2,
+        num_frames=5,
         steps=2,
         guidance_scale=5.0,
         seed=42,
     )
 
     assert images is not None
+    # ComfyUI IMAGE tensor must be 4D (Batch/Frames, Height, Width, 3) in [0.0, 1.0]
+    assert tuple(images.shape) == (5, 128, 128, 3)
     assert "samples" in latents
 
-    # Test VAE Decode
+    # Test VAE Decode produces identical 4D (5, 128, 128, 3) shape in [0.0, 1.0] without double division
     decoder = PhobosStreamVAEDecodeNode()
     decoded_images = decoder.decode(latents, model_dict)[0]
     assert decoded_images is not None
+    assert tuple(decoded_images.shape) == (5, 128, 128, 3)
+    assert float(decoded_images.max()) > 0.1

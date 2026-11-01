@@ -43,6 +43,12 @@ class CUDABackend(BaseBackend):
     def matmul(self, a: Any, b: Any) -> Any:
         return torch.matmul(a, b)
 
+    def reshape(self, x: Any, shape: Tuple[int, ...]) -> Any:
+        return x.reshape(*shape)
+
+    def swapaxes(self, x: Any, axis1: int, axis2: int) -> Any:
+        return torch.swapaxes(x, axis1, axis2)
+
     def layer_norm(self, x: Any, weight: Any, bias: Optional[Any] = None, eps: float = 1e-5) -> Any:
         return F.layer_norm(x, normalized_shape=(x.shape[-1],), weight=weight, bias=bias, eps=eps)
 
@@ -60,6 +66,8 @@ class CUDABackend(BaseBackend):
         return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, scale=scale)
 
     def convert_from_numpy(self, arr: np.ndarray, dtype: Optional[str] = None) -> Any:
+        if not arr.flags["C_CONTIGUOUS"]:
+            arr = np.ascontiguousarray(arr)
         t = torch.from_numpy(arr).to(self.torch_device)
         if dtype is not None and hasattr(torch, dtype):
             t = t.to(getattr(torch, dtype))

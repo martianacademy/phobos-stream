@@ -2,23 +2,54 @@
 
 import json
 import mmap
-import os
 import struct
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 import numpy as np
 
 
 DTYPE_MAP = {
+    "F64": np.float64,
     "F32": np.float32,
     "F16": np.float16,
-    "BF16": np.uint16,  # Treated as uint16 for raw buffer, converted as needed
+    "BF16": np.uint16,
+    "F8_E4M3": np.uint8,
+    "F8_E5M2": np.uint8,
+    "I64": np.int64,
     "I32": np.int32,
     "I16": np.int16,
     "I8": np.int8,
+    "U64": np.uint64,
+    "U32": np.uint32,
+    "U16": np.uint16,
     "U8": np.uint8,
     "BOOL": np.bool_,
 }
+
+
+def _decode_fp8_e4m3(raw_u8: np.ndarray) -> np.ndarray:
+    """Vectorized conversion of 8-bit float (E4M3FN) bit patterns to float32."""
+    u = raw_u8.astype(np.uint32)
+    sign = (u >> 7) & 0x1
+    exp = (u >> 3) & 0xF
+    mant = u & 0x7
+
+    # Normal numbers: (-1)^sign * 2^(exp - 7) * (1 + mant / 8)
+    # Subnormal numbers (exp == 0): (-1)^sign * 2^(-6) * (mant / 8)
+    val = np.where(
+        exp == 0,
+        (mant.astype(np.float32) / 8.0) * (2.0 ** -6),
+        (1.0 + mant.astype(np.float32) / 8.0) * np.exp2(exp.astype(np.float32) - 7.0),
+    )
+    return np.where(sign == 1, -val, val).astype(np.float32)
+
+
+def _decode_fp8_e5m2(raw_u8: np.ndarray) -> np.ndarray:
+    """Vectorized conversion of 8-bit float (E5M2) bit patterns to float32."""
+    u = raw_u8.astype(np.uint16)
+    # E5M2 shares the exact 1-5-2 layout with IEEE 754 FP16 (1-5-10) shifted left by 8 bits
+    fp16_bits = (u << 8).astype(np.uint16)
+    return fp16_bits.view(np.float16).astype(np.float32)
 
 
 class MMapTensorLoader:
@@ -50,35 +81,57 @@ class MMapTensorLoader:
         """List all tensor names present in this safetensors file."""
         return [k for k in self.header.keys() if k != "__metadata__"]
 
-    def read_tensor(self, name: str) -> np.ndarray:
+    def get_tensor_byte_size(self, name: str) -> int:
+        """Return the raw byte size of a tensor from header metadata."""
+        if name not in self.header:
+            raise KeyError(f"Tensor '{name}' not found in {self.file_path.name}")
+        start_rel, end_rel = self.header[name]["data_offsets"]
+        return int(end_rel - start_rel)
+
+    def read_tensor(self, name: str, copy: bool = False) -> np.ndarray:
         """Slice tensor directly from mmap buffer without full file read."""
         if name not in self.header:
             raise KeyError(f"Tensor '{name}' not found in {self.file_path.name}")
 
         meta = self.header[name]
-        dtype = DTYPE_MAP.get(meta["dtype"], np.float32)
+        dtype_str = meta["dtype"]
+        if dtype_str not in DTYPE_MAP:
+            raise ValueError(f"Unsupported safetensors dtype '{dtype_str}' in {self.file_path.name}")
+
+        dtype = DTYPE_MAP[dtype_str]
         shape = tuple(meta["shape"])
         start_rel, end_rel = meta["data_offsets"]
 
         abs_start = self.data_offset + start_rel
         abs_end = self.data_offset + end_rel
 
-        # Sliced view copied so mmap handles can be cleanly closed
         tensor_bytes = memoryview(self.mmap_obj)[abs_start:abs_end]
-        arr = np.frombuffer(tensor_bytes, dtype=dtype).copy()
-        if dtype == np.uint16 and meta["dtype"] == "BF16":
-            # Convert bfloat16 bit pattern to float32
+        arr = np.frombuffer(tensor_bytes, dtype=dtype)
+
+        if dtype_str == "BF16":
             arr = (arr.astype(np.uint32) << 16).view(np.float32)
+        elif dtype_str == "F8_E4M3":
+            arr = _decode_fp8_e4m3(arr)
+        elif dtype_str == "F8_E5M2":
+            arr = _decode_fp8_e5m2(arr)
+        elif copy:
+            arr = arr.copy()
+
         return arr.reshape(shape)
 
-    def read_all_tensors(self) -> Dict[str, np.ndarray]:
+    def read_all_tensors(self, copy: bool = False) -> Dict[str, np.ndarray]:
         """Read all tensors in this file into a dictionary."""
-        return {name: self.read_tensor(name) for name in self.get_tensor_names()}
+        return {name: self.read_tensor(name, copy=copy) for name in self.get_tensor_names()}
 
     def close(self) -> None:
-        """Close mmap and file descriptors."""
+        """Close mmap and file descriptors safely even if zero-copy views exist."""
         if not self.mmap_obj.closed:
-            self.mmap_obj.close()
+            try:
+                self.mmap_obj.close()
+            except BufferError:
+                # Zero-copy numpy views are still referencing the mmap buffer;
+                # OS will unmap automatically when views are garbage-collected.
+                pass
         if not self.file_obj.closed:
             self.file_obj.close()
 

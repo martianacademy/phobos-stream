@@ -31,10 +31,12 @@ def test_phobos_stream_engine_generate() -> None:
 
     config = GenerationConfig(
         prompt="A serene mountain lake at sunrise",
+        negative_prompt="blurry, low quality",
         height=128,
         width=128,
-        num_frames=1,
+        num_frames=5,
         steps=2,
+        guidance_scale=5.0,
     )
 
     steps_recorded = []
@@ -45,6 +47,10 @@ def test_phobos_stream_engine_generate() -> None:
     frames, metrics = engine.generate(config, progress_callback=callback)
 
     assert frames is not None
+    # Verify exact (T, H, W, 3) uint8 RGB shape
+    assert frames.shape == (5, 128, 128, 3)
+    assert frames.dtype == np.uint8
     assert metrics.steps_completed == 2
     assert len(steps_recorded) > 0
     assert metrics.total_time_sec > 0
+    assert metrics.peak_vram_mb > 0
