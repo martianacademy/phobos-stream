@@ -1,4 +1,4 @@
-# PhobosStream 🌌
+# <img src="assets/icon.png" width="42" align="top" alt="PhobosStream Icon" /> PhobosStream
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://www.python.org/)
