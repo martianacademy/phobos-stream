@@ -4,12 +4,24 @@ build-backend = "hatchling.build"
 
 [project]
 name = "phobos-stream"
-version = "0.1.0"
-description = "Universal Zero-VRAM Video & Image Diffusion Streaming Engine (MLX • CUDA • ROCm • GGUF)"
+version = "0.2.0"
+description = "Universal Zero-VRAM Video & Image Diffusion Streaming Engine (MLX • CUDA • MPS • ROCm • GGUF)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Martian Academy", email = "research@martian.academy" }]
+keywords = ["diffusion", "comfyui", "mlx", "zero-vram", "dit", "flux", "wan2.1", "mmap", "offloading"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "numpy>=1.26.0",
     "safetensors>=0.4.5",
@@ -20,6 +32,11 @@ dependencies = [
     "tqdm>=4.66.0",
     "mlx>=0.22.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
+
+[project.urls]
+Homepage = "https://github.com/martianacademy/phobos-stream"
+Repository = "https://github.com/martianacademy/phobos-stream"
+Issues = "https://github.com/martianacademy/phobos-stream/issues"
 
 [project.optional-dependencies]
 cuda = [
@@ -35,6 +52,9 @@ dev = [
 
 [project.scripts]
 phobos-stream = "phobos_stream.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/phobos_stream"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
