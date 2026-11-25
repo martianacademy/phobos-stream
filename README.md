@@ -1,7 +1,7 @@
 # <img src="https://raw.githubusercontent.com/martianacademy/phobos-stream/main/assets/icon.png" width="42" align="top" alt="PhobosStream Icon" /> PhobosStream
 
 [![PyPI Version](https://img.shields.io/pypi/v/phobos-stream?color=EE6A3E&label=PyPI)](https://pypi.org/project/phobos-stream/)
-[![Comfy Registry](https://img.shields.io/badge/Comfy_Registry-v0.2.3-EE6A3E)](https://registry.comfy.org/publishers/martianacademy/nodes/comfyui-phobosstream)
+[![Comfy Registry](https://img.shields.io/badge/Comfy_Registry-v0.2.4-EE6A3E)](https://registry.comfy.org/publishers/martianacademy/nodes/comfyui-phobosstream)
 [![CI Tests](https://github.com/martianacademy/phobos-stream/actions/workflows/ci.yml/badge.svg)](https://github.com/martianacademy/phobos-stream/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/martianacademy/phobos-stream/blob/main/LICENSE)
@@ -16,12 +16,12 @@ By combining **3-Stage Sequential Offloading** (`Text Encoder -> DiT -> Tiled VA
 
 ### A. NVIDIA CUDA GPU — 8.0 GiB Hardware VRAM Cap & 3-Tier `HYBRID_BUDGET` (Tesla T4)
 
-*1. **Real `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` (~14.5 GB BF16: `UMT5-XXL` + 30-block `WanDiT` + 3D `WanVAE`)** under an enforced **`8.00 GiB` CUDA VRAM limit** (`torch.cuda.set_per_process_memory_fraction`, `480×320`, `17 frames`, `12 steps` via standalone FastAPI `/v1/videos/generations`):*
+*1. **Real `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` (~14.5 GB BF16: `UMT5-XXL` + 30-block `WanDiT` + 3D `WanVAE`)** under an enforced **`8.00 GiB` CUDA VRAM limit** (`torch.cuda.set_per_process_memory_fraction`, native widescreen **`832×480`**, `25 frames`, `40 steps`, `flow_shift=3.0` via standalone FastAPI `/v1/videos/generations`):*
 
 | Pipeline Configuration | Enforced CUDA Cap | Peak CUDA VRAM | Result |
 | :--- | :---: | :---: | :--- |
 | **Standard Monolithic `WanPipeline.to("cuda")`** | `8,192.0 MB` (`8.0 GiB`) | `> 8,192 MB` (**OOM**) | ❌ Crashes (`CUDA out of memory`) |
-| **`phobos-stream serve` (`HYBRID_BUDGET`: 27 GPU + 3 CPU-Pinned)** | `8,192.0 MB` (`8.0 GiB`) | **`4,373.1 MB` (`4.27 GiB`)** | ✅ Valid 17-frame H.264 `.mp4` (`260.3 s` on SM75 T4) |
+| **`phobos-stream serve` (`HYBRID_BUDGET` + Fused SDPA)** | `8,192.0 MB` (`8.0 GiB`) | **`3,263.9 MB` (`3.19 GiB`)** | ✅ Crisp 25-frame `832×480` H.264 `.mp4` (fits even 4 GB–8 GB GPUs!) |
 
 *2. **3-Tier `TorchBlockStreamer` Benchmark on NVIDIA Tesla T4** (24-block 2.3 GB FP16 DiT, `4 steps`, double-buffered CUDA `record_stream` prefetch):*
 

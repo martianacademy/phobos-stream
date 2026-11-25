@@ -3,7 +3,7 @@
 Supports Apple Silicon (MLX), NVIDIA CUDA, AMD ROCm, Vulkan, and GGUF quantization.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.2"
 __author__ = "Martian Academy"
 
 from phobos_stream.types import (
