@@ -261,3 +261,63 @@ def test_batched_cfg_reads_shards_once_per_step_and_exports_mp4(tmp_path: Path) 
     mp4_path = save_rgb_mp4(frames, tmp_path / "out.mp4", fps=12)
     assert mp4_path.exists()
     assert b"ftyp" in mp4_path.read_bytes()[:32]
+
+
+def test_hybrid_budget_three_tier_residency_and_exact_equivalence(tmp_path: Path) -> None:
+    """Verify 6 blocks split cleanly across GPU_RESIDENT (2) + CPU_PINNED (2) + NVME_MMAP (2)."""
+    torch = pytest.importorskip("torch")
+    st_torch = pytest.importorskip("safetensors.torch")
+    import torch.nn as nn
+
+    class SixBlockNet(nn.Module):
+        def __init__(self, dim: int = 64) -> None:
+            super().__init__()
+            self.stem = nn.Linear(16, dim)
+            # Each Linear(64, 64, bias=False) in float32 is 64*64*4 = 16,384 bytes (16 KB)
+            self.blocks = nn.ModuleList([nn.Linear(dim, dim, bias=False) for _ in range(6)])
+            self.head = nn.Linear(dim, 16)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            h = self.stem(x)
+            for blk in self.blocks:
+                h = h + torch.tanh(blk(h))
+            return self.head(h)
+
+    torch.manual_seed(99)
+    ref_net = SixBlockNet(dim=64).eval()
+    st_path = tmp_path / "six_block.safetensors"
+    st_torch.save_file(ref_net.state_dict(), str(st_path))
+
+    x = torch.randn(2, 5, 16)
+    with torch.no_grad():
+        expected = ref_net(x)
+
+    with torch.device("meta"):
+        hybrid_net = SixBlockNet(dim=64)
+    hybrid_net.eval()
+
+    # Each block = 16 KB.
+    # Set raw VRAM budget = 64 KB -> minus 2*16 KB streaming reserve = 32 KB effective -> fits 2 GPU_RESIDENT blocks!
+    # Set RAM budget = 32 KB -> fits 2 CPU_PINNED blocks!
+    # Remaining 2 blocks -> assigned to NVME_MMAP (0 elements in RAM)!
+    with TorchBlockStreamer(
+        hybrid_net,
+        compute_device="cpu",
+        mode=BlockStreamMode.HYBRID_BUDGET,
+        safetensors_paths=[st_path],
+        vram_budget_mb=64.0 / 1024.0,
+        ram_budget_mb=32.0 / 1024.0,
+    ) as streamer:
+        summary = streamer.tier_summary
+        assert summary == {"gpu_resident": 2, "cpu_pinned": 2, "nvme_mmap": 2}
+        # Verify NVME_MMAP blocks (4 and 5) hold 0 elements before forward
+        assert next(hybrid_net.blocks[4].parameters()).numel() == 0
+        assert next(hybrid_net.blocks[5].parameters()).numel() == 0
+
+        with torch.no_grad():
+            actual = hybrid_net(x)
+
+        assert next(hybrid_net.blocks[4].parameters()).numel() == 0
+        assert streamer.blocks_executed == 6
+
+    assert torch.allclose(expected, actual, atol=1e-5)

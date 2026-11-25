@@ -7,9 +7,11 @@ import uvicorn
 
 from phobos_stream.media import save_rgb_mp4, save_rgb_png
 from phobos_stream.pipeline.stream_engine import PhobosStreamEngine
+from phobos_stream.pipelines.hf_diffusers import HFDiffusersStreamEngine
 from phobos_stream.server.app import create_app
 from phobos_stream.storage.layout import ModelShardsManifest
 from phobos_stream.storage.sharder import DiffusionSharder
+from phobos_stream.streaming import BlockStreamMode
 from phobos_stream.types import BackendType, GenerationConfig
 
 
@@ -22,21 +24,37 @@ def main() -> None:
 @main.command()
 @click.option("--host", default="0.0.0.0", help="Host interface to bind")
 @click.option("--port", default=8088, type=int, help="Port to listen on")
+@click.option("--hf-model", default=None, help="HuggingFace repo ID or local Diffusers path (e.g. Wan-AI/Wan2.1-T2V-1.3B-Diffusers)")
 @click.option("--manifest-path", default=None, type=click.Path(exists=True), help="Path to manifest.json")
+@click.option("--stream-mode", default="hybrid_budget", type=click.Choice(["hybrid_budget", "cpu_offload", "mmap_stream", "stage_only"]))
+@click.option("--vram-budget-mb", default=None, type=float, help="Optional GPU VRAM budget in MB for hybrid block residency")
+@click.option("--ram-budget-mb", default=None, type=float, help="Optional CPU RAM budget in MB for hybrid block residency")
 @click.option("--backend", default="auto", type=click.Choice(["auto", "mlx", "cuda", "gguf", "cpu"]))
-@click.option("--allow-synthetic", is_flag=True, default=False, help="Allow synthetic benchmark weights when no manifest is set")
+@click.option("--allow-synthetic", is_flag=True, default=False, help="Allow synthetic benchmark weights when no model is set")
 def serve(
     host: str,
     port: int,
+    hf_model: Optional[str],
     manifest_path: Optional[str],
+    stream_mode: str,
+    vram_budget_mb: Optional[float],
+    ram_budget_mb: Optional[float],
     backend: str,
     allow_synthetic: bool,
 ) -> None:
     """Launch the OpenAI/Sora-compatible HTTP & WebSocket API Gateway."""
     manifest = ModelShardsManifest.load(Path(manifest_path)) if manifest_path else None
-    backend_type = BackendType(backend)
-    app = create_app(manifest=manifest, backend_type=backend_type, allow_synthetic=allow_synthetic)
-    click.echo(f"[*] Starting PhobosStream Gateway on http://{host}:{port} [Backend: {backend}]")
+    app = create_app(
+        manifest=manifest,
+        backend_type=BackendType(backend),
+        allow_synthetic=allow_synthetic,
+        hf_model_id=hf_model,
+        stream_mode=BlockStreamMode(stream_mode),
+        vram_budget_mb=vram_budget_mb,
+        ram_budget_mb=ram_budget_mb,
+    )
+    target = hf_model or (manifest.model_name if manifest else "default")
+    click.echo(f"[*] Starting PhobosStream Gateway on http://{host}:{port} [Model: {target} | Mode: {stream_mode}]")
     uvicorn.run(app, host=host, port=port)
 
 
@@ -50,8 +68,12 @@ def serve(
 @click.option("--fps", default=24, type=int, help="Video frame rate when --video is set")
 @click.option("--steps", default=20, type=int, help="Denoising steps")
 @click.option("--guidance-scale", default=6.0, type=float, help="Classifier-free guidance scale")
+@click.option("--hf-model", default=None, help="HuggingFace repo ID or local Diffusers path (e.g. Wan-AI/Wan2.1-T2V-1.3B-Diffusers)")
+@click.option("--stream-mode", default="hybrid_budget", type=click.Choice(["hybrid_budget", "cpu_offload", "mmap_stream", "stage_only"]))
+@click.option("--vram-budget-mb", default=None, type=float, help="Optional GPU VRAM budget in MB")
+@click.option("--ram-budget-mb", default=None, type=float, help="Optional CPU RAM budget in MB")
 @click.option("--manifest-path", default=None, type=click.Path(exists=True), help="Path to shard manifest.json")
-@click.option("--allow-synthetic", is_flag=True, default=False, help="Explicitly run synthetic benchmark mode without real weights")
+@click.option("--allow-synthetic", is_flag=True, default=False, help="Explicitly run synthetic benchmark mode")
 @click.option("--output", "-o", default="outputs/generated.mp4", help="Output file path (.mp4 or .png)")
 @click.option("--backend", default="auto", type=click.Choice(["auto", "mlx", "cuda", "gguf", "cpu"]))
 def generate(
@@ -64,31 +86,16 @@ def generate(
     fps: int,
     steps: int,
     guidance_scale: float,
+    hf_model: Optional[str],
+    stream_mode: str,
+    vram_budget_mb: Optional[float],
+    ram_budget_mb: Optional[float],
     manifest_path: Optional[str],
     allow_synthetic: bool,
     output: str,
     backend: str,
 ) -> None:
     """Generate a video or image via zero-VRAM streaming and save to disk."""
-    if manifest_path:
-        manifest = ModelShardsManifest.load(Path(manifest_path))
-        if allow_synthetic:
-            manifest.allow_synthetic = True
-    elif allow_synthetic:
-        manifest = ModelShardsManifest(
-            model_name="wan2.1-synthetic-benchmark",
-            architecture="wan2.1",
-            num_blocks=4,
-            hidden_size=2048,
-            allow_synthetic=True,
-        )
-    else:
-        raise click.UsageError(
-            "Real generation requires `--manifest-path <path/to/manifest.json>` (or use ComfyUI / "
-            "`StageSequentialRunner`). Pass `--allow-synthetic` only for synthetic benchmarking."
-        )
-
-    engine = PhobosStreamEngine(manifest=manifest, backend_type=BackendType(backend))
     config = GenerationConfig(
         prompt=prompt,
         negative_prompt=negative_prompt,
@@ -99,11 +106,44 @@ def generate(
         steps=steps,
         guidance_scale=guidance_scale,
     )
-    click.echo(f"[*] Generating {'Video' if video else 'Image'} with PhobosStream...")
-    rgb_frames, metrics = engine.generate(
-        config,
-        progress_callback=lambda step, total, stage: click.echo(f"[{stage}] Step {step}/{total}"),
-    )
+
+    if hf_model:
+        runner = HFDiffusersStreamEngine(
+            model_id_or_path=hf_model,
+            device="cpu" if backend == "cpu" else "auto",
+            stream_mode=BlockStreamMode(stream_mode),
+            vram_budget_mb=vram_budget_mb,
+            ram_budget_mb=ram_budget_mb,
+        )
+        click.echo(f"[*] Generating {'Video' if video else 'Image'} via Real HF Pipeline [{hf_model}] ({stream_mode})...")
+        rgb_frames, metrics = runner.generate(
+            config,
+            progress_callback=lambda step, total, stage: click.echo(f"[{stage}] Step {step}/{total}"),
+        )
+    else:
+        if manifest_path:
+            manifest = ModelShardsManifest.load(Path(manifest_path))
+            if allow_synthetic:
+                manifest.allow_synthetic = True
+        elif allow_synthetic:
+            manifest = ModelShardsManifest(
+                model_name="wan2.1-synthetic-benchmark",
+                architecture="wan2.1",
+                num_blocks=4,
+                hidden_size=2048,
+                allow_synthetic=True,
+            )
+        else:
+            raise click.UsageError(
+                "Provide `--hf-model <repo_id>` (e.g. `Wan-AI/Wan2.1-T2V-1.3B-Diffusers`) or `--manifest-path`, "
+                "or pass `--allow-synthetic` for synthetic benchmarking."
+            )
+        engine = PhobosStreamEngine(manifest=manifest, backend_type=BackendType(backend))
+        click.echo(f"[*] Generating {'Video' if video else 'Image'} with PhobosStream...")
+        rgb_frames, metrics = engine.generate(
+            config,
+            progress_callback=lambda step, total, stage: click.echo(f"[{stage}] Step {step}/{total}"),
+        )
 
     out_path = Path(output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -176,7 +216,7 @@ def benchmark(steps: int, blocks: int, backend: str) -> None:
     click.echo(f"Total Latency:     {metrics.total_time_sec:.3f} s")
     click.echo(f"Denoising Latency: {metrics.denoising_time_sec:.3f} s ({metrics.denoising_time_sec / steps:.3f} s/step)")
     click.echo(f"Peak VRAM/RAM:     {metrics.peak_vram_mb:.2f} MB")
-    click.echo(f"I/O Throughput:    {metrics.io_throughput_mb_s:.2f} MB/s")
+    click.echo(f"I/O Throughput:    {metrics.io_throughput_mb_s:.1f} MB/s")
     click.echo("=" * 60)
 
 

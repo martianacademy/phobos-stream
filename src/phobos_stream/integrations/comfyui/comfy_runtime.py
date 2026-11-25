@@ -197,8 +197,9 @@ def decode_comfy_vae_smart(
 
 def attach_streamer_to_comfy_model(
     comfy_model: Any,
-    block_stream_mode: str = "cpu_offload",
+    block_stream_mode: str = "hybrid_budget",
     unet_name: str = "",
+    vram_budget_mb: Optional[float] = None,
 ) -> Optional[TorchBlockStreamer]:
     """Attach `TorchBlockStreamer` onto a ComfyUI `ModelPatcher`'s underlying `diffusion_model`."""
     mode = BlockStreamMode(block_stream_mode)
@@ -217,7 +218,7 @@ def attach_streamer_to_comfy_model(
         diff_mod = comfy_model
 
     st_paths: List[Path] = []
-    if mode == BlockStreamMode.MMAP_STREAM:
+    if mode in (BlockStreamMode.MMAP_STREAM, BlockStreamMode.HYBRID_BUDGET):
         if unet_name and Path(unet_name).exists():
             st_paths.append(Path(unet_name))
         elif unet_name and COMFY_NATIVE_AVAILABLE and folder_paths is not None:
@@ -230,6 +231,7 @@ def attach_streamer_to_comfy_model(
         compute_device="auto",
         mode=mode,
         safetensors_paths=st_paths,
+        vram_budget_mb=vram_budget_mb if (vram_budget_mb and vram_budget_mb > 0) else None,
     )
     streamer.attach()
     return streamer

@@ -59,7 +59,7 @@ class PhobosStreamLoaderNode:
                 "clip_type": (CLIP_TYPE_CHOICES, {"default": "lumina2"}),
                 "vae_name": (vae_list, {"default": vae_list[0]}),
                 "aura_shift": ("FLOAT", {"default": 3.0, "min": 0.0, "max": 12.0, "step": 0.1}),
-                "block_stream_mode": (["stage_only", "cpu_offload", "mmap_stream"], {"default": "stage_only"}),
+                "block_stream_mode": (["stage_only", "hybrid_budget", "cpu_offload", "mmap_stream"], {"default": "stage_only"}),
                 "use_comfy_stage_offload": ("BOOLEAN", {"default": True}),
                 "allow_synthetic": ("BOOLEAN", {"default": False}),
             },
@@ -133,9 +133,10 @@ class PhobosBlockStreamPatcherNode:
         return {
             "required": {
                 "model": ("MODEL",),
-                "mode": (["cpu_offload", "mmap_stream"], {"default": "cpu_offload"}),
+                "mode": (["hybrid_budget", "cpu_offload", "mmap_stream"], {"default": "hybrid_budget"}),
             },
             "optional": {
+                "vram_budget_mb": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 65536.0, "step": 256.0}),
                 "safetensors_path": ("STRING", {"default": ""}),
             },
         }
@@ -148,7 +149,8 @@ class PhobosBlockStreamPatcherNode:
     def patch_model(
         self,
         model: Any,
-        mode: str = "cpu_offload",
+        mode: str = "hybrid_budget",
+        vram_budget_mb: float = 0.0,
         safetensors_path: str = "",
     ) -> Tuple[Any]:
         patched = model.clone() if hasattr(model, "clone") else model
@@ -156,6 +158,7 @@ class PhobosBlockStreamPatcherNode:
             comfy_model=patched,
             block_stream_mode=mode,
             unet_name=safetensors_path.strip(),
+            vram_budget_mb=vram_budget_mb if vram_budget_mb > 0 else None,
         )
         setattr(patched, "_phobos_block_streamer", streamer)
         return (patched,)
@@ -373,7 +376,7 @@ class PhobosStageOffloadPipelineNode:
                 "num_frames": ("INT", {"default": 1, "min": 1, "max": 241, "step": 1}),
                 "clip_name2": (clip2_list, {"default": "none"}),
                 "weight_dtype": (["default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2"], {"default": "default"}),
-                "block_stream_mode": (["stage_only", "cpu_offload", "mmap_stream"], {"default": "stage_only"}),
+                "block_stream_mode": (["stage_only", "hybrid_budget", "cpu_offload", "mmap_stream"], {"default": "stage_only"}),
                 "use_tiled_vae": ("BOOLEAN", {"default": True}),
             },
         }
