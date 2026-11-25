@@ -81,40 +81,39 @@ def save_rgb_mp4(rgb_frames: np.ndarray, path: Path, fps: int = 24) -> Path:
     _, height, width, _ = frames.shape
     ffmpeg_bin = shutil.which("ffmpeg")
     if ffmpeg_bin:
-        cmd = [
-            ffmpeg_bin,
-            "-y",
-            "-loglevel",
-            "error",
-            "-f",
-            "rawvideo",
-            "-vcodec",
-            "rawvideo",
-            "-pix_fmt",
-            "rgb24",
-            "-s",
-            f"{width}x{height}",
-            "-r",
-            str(max(1, int(fps))),
-            "-i",
-            "-",
-            "-vf",
-            "pad=ceil(iw/2)*2:ceil(ih/2)*2",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-crf",
-            "18",
-            "-pix_fmt",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
-            str(out_path),
-        ]
-        proc = subprocess.run(cmd, input=frames.tobytes(), capture_output=True, check=False)
-        if proc.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
-            return out_path
+        for codec_args in (
+            ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "18"],
+            ["-c:v", "mpeg4", "-q:v", "3"],
+        ):
+            cmd = [
+                ffmpeg_bin,
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "rawvideo",
+                "-vcodec",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "-s",
+                f"{width}x{height}",
+                "-r",
+                str(max(1, int(fps))),
+                "-i",
+                "-",
+                "-vf",
+                "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+                *codec_args,
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                str(out_path),
+            ]
+            proc = subprocess.run(cmd, input=frames.tobytes(), capture_output=True, check=False)
+            if proc.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
+                return out_path
 
     # Fallback to OpenCV VideoWriter if ffmpeg is absent or lacks libx264
     try:

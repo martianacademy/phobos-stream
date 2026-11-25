@@ -11,6 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Populate ComfyUI-PhobosStream bundle for standalone integration test
+        run: |
+          if [ ! -f ComfyUI-PhobosStream/__init__.py ]; then
+            rm -rf ComfyUI-PhobosStream
+            git clone --depth 1 https://github.com/martianacademy/ComfyUI-PhobosStream.git ComfyUI-PhobosStream
+          fi
       - uses: astral-sh/setup-uv@v4
       - name: Install dependencies & run pytest
         run: |
