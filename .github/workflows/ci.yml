@@ -18,6 +18,8 @@ jobs:
             git clone --depth 1 https://github.com/martianacademy/ComfyUI-PhobosStream.git ComfyUI-PhobosStream
           fi
       - uses: astral-sh/setup-uv@v4
+      - name: Ensure ffmpeg is available for MP4 video export tests
+        run: which ffmpeg || (sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg)
       - name: Install dependencies & run pytest
         run: |
           uv venv --python 3.12
