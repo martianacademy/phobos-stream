@@ -1,14 +1,56 @@
 """Real HuggingFace Diffusers 3-stage sequential & block-streamed engine (Wan2.1, FLUX, SDXL)."""
 
+from contextlib import contextmanager
 import html
 from pathlib import Path
 import re
-from typing import Any, Callable, Dict, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple, Union
 import numpy as np
 
 from phobos_stream.pipeline.stage_runner import StageSequentialRunner, flush_accelerator_memory
 from phobos_stream.streaming import BlockStreamMode, TorchBlockStreamer
 from phobos_stream.types import GenerationConfig, PipelineMetrics
+
+
+DEFAULT_WAN_NEGATIVE_PROMPT = (
+    "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, "
+    "images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, "
+    "incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, "
+    "misshapen limbs, fused fingers, still picture, messy background, three legs, many people "
+    "in the background, walking backwards"
+)
+
+
+@contextmanager
+def _pre_ampere_bf16_sdpa_fastpath(device_str: str) -> Iterator[None]:
+    """Use fused FP16 SDPA on Turing/Volta CUDA (< SM80) when model activations are BF16."""
+    import torch
+    import torch.nn.functional as F
+
+    use_fastpath = False
+    if device_str.startswith("cuda") and torch.cuda.is_available():
+        major, _ = torch.cuda.get_device_capability(torch.device(device_str))
+        use_fastpath = major < 8
+
+    if not use_fastpath:
+        yield
+        return
+
+    orig_sdpa = F.scaled_dot_product_attention
+
+    def _wrapped_sdpa(query: Any, key: Any, value: Any, *args: Any, **kwargs: Any) -> Any:
+        if query.dtype == torch.bfloat16 and query.is_cuda:
+            q16 = query.clamp(-65000.0, 65000.0).to(torch.float16)
+            k16 = key.clamp(-65000.0, 65000.0).to(torch.float16)
+            v16 = value.clamp(-65000.0, 65000.0).to(torch.float16)
+            return orig_sdpa(q16, k16, v16, *args, **kwargs).to(torch.bfloat16)
+        return orig_sdpa(query, key, value, *args, **kwargs)
+
+    F.scaled_dot_product_attention = _wrapped_sdpa
+    try:
+        yield
+    finally:
+        F.scaled_dot_product_attention = orig_sdpa
 
 
 def _clean_prompt_text(text: str) -> str:
@@ -102,7 +144,7 @@ class HFDiffusersStreamEngine:
         tokenizer: Any,
         text_encoder: Any,
         text: str,
-        max_seq_len: int = 226,
+        max_seq_len: int = 512,
     ) -> Any:
         import torch
 
@@ -158,21 +200,29 @@ class HFDiffusersStreamEngine:
                 pos_emb = self._encode_umt5_prompt(tokenizer, text_encoder, config.prompt)
                 neg_emb = None
                 if config.guidance_scale > 1.0:
+                    neg_text = (config.negative_prompt or "").strip() or DEFAULT_WAN_NEGATIVE_PROMPT
                     neg_emb = self._encode_umt5_prompt(
                         tokenizer,
                         text_encoder,
-                        config.negative_prompt or "",
+                        neg_text,
                     )
             del text_encoder, tokenizer
             return {"prompt_embeds": pos_emb, "negative_prompt_embeds": neg_emb}
 
         def _stage2_denoise(cond: Dict[str, Any]) -> Tuple[Any, int, int]:
-            scheduler = UniPCMultistepScheduler.from_pretrained(self.model_id, subfolder="scheduler")
+            h_aligned = max(128, (config.height // 16) * 16)
+            w_aligned = max(128, (config.width // 16) * 16)
+            f_aligned = 1 if config.num_frames <= 1 else max(5, ((config.num_frames - 1) // 4) * 4 + 1)
+            flow_shift = 3.0 if min(h_aligned, w_aligned) <= 512 else 5.0
+            scheduler = UniPCMultistepScheduler.from_pretrained(
+                self.model_id,
+                subfolder="scheduler",
+                flow_shift=flow_shift,
+            )
             vae_cfg = AutoencoderKLWan.load_config(self.model_id, subfolder="vae")
             with torch.device("meta"):
                 meta_vae = AutoencoderKLWan.from_config(vae_cfg)
 
-            # Wan2.1 transformer requires float32/bfloat16 or float16 matching weights; check rotary stability
             dit_dtype = torch.bfloat16 if self.dtype == torch.bfloat16 else torch.float16
             transformer = WanTransformer3DModel.from_pretrained(
                 self.model_id,
@@ -180,10 +230,6 @@ class HFDiffusersStreamEngine:
                 torch_dtype=dit_dtype,
                 low_cpu_mem_usage=True,
             ).eval()
-
-            h_aligned = max(128, (config.height // 16) * 16)
-            w_aligned = max(128, (config.width // 16) * 16)
-            f_aligned = 1 if config.num_frames <= 1 else max(5, ((config.num_frames - 1) // 4) * 4 + 1)
 
             dit_shards = _resolve_cached_safetensors(self.model_id, "transformer")
             with TorchBlockStreamer(
@@ -212,7 +258,7 @@ class HFDiffusersStreamEngine:
                     if cond["negative_prompt_embeds"] is not None and config.guidance_scale > 1.0
                     else None
                 )
-                with torch.no_grad():
+                with torch.no_grad(), _pre_ampere_bf16_sdpa_fastpath(self.device):
                     out = pipe_dit(
                         prompt=None,
                         negative_prompt=None,

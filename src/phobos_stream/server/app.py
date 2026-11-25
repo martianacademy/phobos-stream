@@ -153,10 +153,12 @@ def create_app(
             for idx in range(req.n):
                 config = GenerationConfig(
                     prompt=req.prompt,
+                    negative_prompt=req.negative_prompt or "",
                     width=width,
                     height=height,
                     num_frames=1,
                     steps=req.steps,
+                    guidance_scale=req.guidance_scale,
                     seed=base_seed + idx,
                 )
                 rgb_frames, _ = active_runner.generate(config, progress_callback=_make_progress_cb())
@@ -181,11 +183,13 @@ def create_app(
         _select_model_architecture(req.model)
         config = GenerationConfig(
             prompt=req.prompt,
+            negative_prompt=req.negative_prompt or "",
             width=req.width,
             height=req.height,
             num_frames=req.num_frames,
             fps=req.fps,
             steps=req.steps,
+            guidance_scale=req.guidance_scale,
             seed=req.seed if req.seed is not None else 42,
         )
         active_runner: Any = hf_engine if hf_engine is not None else engine
