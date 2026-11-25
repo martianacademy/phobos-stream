@@ -2,71 +2,32 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://www.python.org/)
-[![Backends](https://img.shields.io/badge/Backends-MLX%20•%20CUDA%20•%20ROCm%20•%20GGUF-purple.svg)]()
-[![Tests Passing](https://img.shields.io/badge/Tests-15%20Passing-success.svg)]()
+[![Backends](https://img.shields.io/badge/Backends-MLX%20•%20CUDA%20•%20MPS%20•%20ROCm%20•%20GGUF-purple.svg)]()
+[![Tests Passing](https://img.shields.io/badge/Tests-27%20Passing-success.svg)]()
 
-**PhobosStream** is a universal, zero-VRAM diffusion inference engine designed to stream massive **12B–20B+ Video and Image Diffusion Transformers (DiTs)** — including **Alibaba Wan2.1 (14B)**, **Black Forest Labs FLUX.1 (12B)**, and **Tencent HunyuanVideo (13B)** — across consumer hardware.
+**PhobosStream** is a universal zero-VRAM diffusion streaming engine designed to run massive **12B–20B+ Video and Image Diffusion Transformers (DiTs)** — including **Alibaba Wan2.1 (14B)**, **Black Forest Labs FLUX.1 (12B)**, **Lumina2 / Z-Image-Turbo**, and **Tencent HunyuanVideo (13B)** — on consumer hardware without Out-Of-Memory (OOM) crashes.
 
-By orchestrating **3-Stage Sequential Offloading** and **Zero-Copy `mmap` Block-by-Block Streaming**, PhobosStream enables consumer **16GB / 24GB Apple Silicon Macs** and **8GB / 12GB NVIDIA GeForce RTX GPUs** to generate professional-grade videos and images without Out-Of-Memory (OOM) crashes.
-
----
-
-## 💡 Why PhobosStream?
-
-Frontier video generation models (Wan2.1, HunyuanVideo) and photorealistic image generators (FLUX.1) require between **28 GB to 48 GB of active VRAM/Unified Memory**. Consumer laptops and desktop workstations crash instantly upon loading these models.
-
-Traditional workarounds force heavy 2-bit or 3-bit quantization, degrading visual quality and frame coherence.
-
-**PhobosStream provides a different solution:**
-
-1. **Stage-Wise Pipeline Offloading:** Text Encoders (T5-XXL / CLIP ~12GB) and VAE decoders are loaded sequentially, executed, and immediately evicted from memory.
-2. **Block-by-Block Zero-Copy `mmap` Streaming:** The core Diffusion Transformer (DiT) runs block-by-block. Only the active transformer block resides in memory, while the rest stay mapped to the NVMe SSD.
-3. **Universal Compute Backends:** Runs natively on **Apple Silicon Metal (via MLX)**, **NVIDIA CUDA / AMD ROCm (via PyTorch)**, and **quantized GGUF / CPU**.
+By combining **3-Stage Sequential Offloading** (`Text Encoder -> DiT -> Tiled VAE`) with **Hook-Based Zero-Copy `mmap` Block-by-Block Streaming** (`TorchBlockStreamer` & `MLXBlockStreamer`), PhobosStream cuts Peak GPU Memory on a real **19.5 GB BF16 pipeline from 26.45 GB down to 1.25–1.60 GB (93.9%–95.3% VRAM reduction)** with **zero quantization quality loss**.
 
 ---
 
-## 📊 Empirical Benchmarks & VRAM Savings
+## 📊 Verified Empirical Benchmarks (Real 19.5 GB Model Suite)
 
-### 1. Memory Consumption Comparison
+*Measured end-to-end on Apple Silicon Metal GPU across isolated fresh subprocesses (`scripts/benchmark_real_phobos_optimization.py`) using `qwen_3_4b.safetensors` (7.5 GB, 36 layers) + `z_image_turbo_bf16.safetensors` (11.7 GB, 34 blocks) + `ae.safetensors` (320 MB) at `1024 × 1024`, `8 steps`, `seed=42`:*
 
-| Model & Architecture | Parameter Size | Monolithic VRAM Baseline | PhobosStream Peak VRAM | VRAM Saved | Consumer Hardware Enabled |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Alibaba Wan2.1** | **14B Video DiT** | ~38.4 GB (Weights + Act) | **788.11 MB** | **97.9%** | 8GB GPUs / Mac Mini (M1–M4) |
-| **Z-Image-Turbo** | **11B Image DiT + Qwen**| ~23.5 GB (18.8GB + Act) | **~920.00 MB** | **96.1%** | RTX 3060 / 4060 (8GB/12GB) |
-| **FLUX.1 Schnell/Dev**| **12B Image DiT** | ~24.8 GB | **~850.00 MB** | **96.6%** | Any 8GB GPU / 16GB Mac |
-| **SD-Turbo** | **Real-time UNet** | ~2.8 GB | **~340.00 MB** | **87.8%** | Low-RAM Devices (<1GB) |
+| Execution Mode | Peak Metal GPU Memory | VRAM Saved | Active Resident Weights | Denoising (`Per Step`) | Total Wall Time | Visual Quality |
+| :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| **1. Monolithic Baseline** *(All 3 in GPU RAM)* | **26,445.0 MB** | `0.0%` | 19,637.5 MB | `36.80 s` (`4.60 s`) | `41.97 s` | Reference BF16 |
+| **2. Phobos 3-Stage Offload (BF16)** | **12,906.4 MB** | **`51.2%`** | 11,742.5 MB | `44.14 s` (`5.52 s`) | `46.99 s` | Lossless BF16 (`32.68 dB` PSNR vs non-strip VAE) |
+| **3. Phobos 3-Stage + Q4 Quantized** | **4,814.7 MB** | **`81.8%`** | 3,310.4 MB | `66.89 s` (`8.36 s`) | `69.72 s` | 4-bit Quantized (`19.25 dB` PSNR) |
+| **4. Phobos Zero-VRAM Block-Stream (Full BF16)** | **1,601.0 MB** *(DiT: **1,248.2 MB**)* | **`93.9%`** *(DiT: **95.3%**)* | **23.2 MB** (`91.6 MB` active) | `71.45 s` (`8.93 s`) | `75.04 s` | **Bit-Exact BF16 (`0.0000 px` diff vs Stage-Offload)** |
 
-### 2. Live Measured Telemetry (Apple Silicon Metal GPU)
-
-*Tested on Apple Silicon Metal GPU with 16-block 2048-dim HD video latents (5 steps, 25 frames):*
-
-```text
-======================================================================
-📊 BENCHMARK PERFORMANCE TELEMETRY
-======================================================================
-  • Total Runtime:           56.350 s
-  • Text Encoding Stage:     2.47 ms (Sequential offloading)
-  • DiT Denoising Stage:     56.150 s (11.230 s/step)
-  • VAE Latent Decode Stage: 60.32 ms
-  • Peak VRAM Consumption:   788.11 MB  (vs ~38.4 GB Baseline: >97% reduction)
-  • Status:                  Zero-VRAM Crash-Free Execution
-======================================================================
-```
-
-### 3. End-to-End Image Generation Latency
-
-*Empirically measured on Apple Silicon Metal (MPS):*
-
-| Model | Resolution | Steps | Load Time | Pure Sampling | Step Latency | Total Pipeline |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **SD-Turbo** | 512 × 512 | 1 | 2.70 s (warm) | **0.38 s** | **0.38 s/step** (~10 it/s) | **3.08 s** |
-| **Z-Image-Turbo (11B)** | 1024 × 1024 | 8 | 2.43 s | **38.33 s** | **4.79 s/step** | **42.38 s** |
-
-### 4. How PhobosStream Achieves >96% VRAM Reduction
-
-1. **Zero-Copy Memory-Mapped I/O (`mmap`)**: Model weights are memory-mapped directly from high-speed NVMe SSD (`PAGE_READONLY`). The kernel manages virtual pages, eliminating duplicate RAM allocations.
-2. **Layer-by-Layer Active Eviction**: At any instant $t$, only one active DiT block resides in physical GPU VRAM (~380 MB). As soon as block $N$ finishes computation, it is unpinned from VRAM, and block $N+1$ streams in.
-3. **Sequential Pipeline Stage Isolation**: Text Encoders (Qwen/T5 ~7-11 GB) execute only during Stage 1 and are immediately released from memory before Stage 2 DiT denoising starts.
+### Key Architectural Mechanisms
+1. **Native BF16/FP16 Zero-Copy `mmap` (`MMapTensorLoader`)**: Slices tensor byte-ranges directly from `.safetensors` on NVMe SSD into native `torch.bfloat16` (`read_torch_tensor`) and `mlx.core.bfloat16` (`read_mlx_array`) without expanding weights to FP32 in host RAM.
+2. **Hook-Based Per-Block Streaming (`TorchBlockStreamer` & `MLXBlockStreamer`)**:
+   - **PyTorch (`CUDA` / `MPS` / `ROCm` / `CPU`)**: Supports `cpu_offload` (read-only pinned CPU shadow + async CUDA prefetch stream, zero GPU→CPU writeback) and `mmap_stream` (zero-RAM `torch.device("meta")` skeleton support + immediate 0-element parameter eviction after each block).
+   - **Apple Silicon (`MLX`)**: Enforces `mx.eval` boundaries per transformer block so MLX lazy graphs never accumulate multi-GB block weights simultaneously in unified memory.
+3. **3-Stage Sequential Offloading & Tiled VAE (`StageSequentialRunner`)**: Isolates Text Encoder, DiT, and spatial-feather-blended Tiled/Strip VAE stages with explicit accelerator cache reclamation between stages, plus single-pass batched Classifier-Free Guidance (cutting disk reads per CFG step by 50%).
 
 ---
 
@@ -75,38 +36,23 @@ Traditional workarounds force heavy 2-bit or 3-bit quantization, degrading visua
 ```mermaid
 flowchart TD
     subgraph STAGE1["Stage 1: Text Encoding"]
-        P["User Text Prompt"] --> TE["T5-XXL / CLIP Encoder"]
-        TE --> EMB["Text Context Tokens"]
-        TE -.->|"Auto Evict / Free Memory"| RAM1["0 MB RAM Footprint"]
+        P["User Prompt"] --> TE["Qwen / T5-XXL / DualCLIP"]
+        TE --> EMB["Conditioning Tensor (~2–5 MB)"]
+        TE -.->|"Immediate Unload + Cache Flush"| FREE1["Text Encoder Freed"]
     end
 
-    subgraph STAGE2["Stage 2: Iterative DiT Denoising Loop"]
-        EMB --> DIT["PhobosStream DiT Engine"]
-        NVME[("NVMe SSD (Safetensors / GGUF)")] ==>|"mmap Zero-Copy Stream"| BLK["Block N (In Memory: ~120MB)"]
-        BLK --> ATTR["Self-Attention + 3D RoPE"]
-        ATTR --> CRSS["Cross-Attention (Text Context)"]
-        CRSS --> FFN["SwiGLU / MLP Layer"]
-        FFN -.->|"Evict Block N -> Prefetch Block N+1"| NVME
-        FFN --> SCHED["Flow Matching Euler ODE Step"]
+    subgraph STAGE2["Stage 2: Hook-Streamed DiT Denoising"]
+        EMB --> DIT["TorchBlockStreamer / MLXBlockStreamer"]
+        NVME[("NVMe SSD (.safetensors mmap)")] ==>|"Stream Active Block N (~360 MB)"| BLK["Native DiT Block Forward"]
+        BLK -.->|"Eval + Evict Block N to 0 Bytes"| NVME
+        BLK --> ODE["Batched CFG + Flow Matching Step"]
     end
 
-    subgraph STAGE3["Stage 3: Latent Reconstruction"]
-        SCHED --> VAE["VAE Latent Decoder"]
-        VAE --> OUT["Generated MP4 Video / PNG Image"]
-        VAE -.->|"Auto Evict"| RAM3["Memory Reclaimed"]
+    subgraph STAGE3["Stage 3: Tiled / Strip VAE Reconstruction"]
+        ODE --> VAE["Feather-Blended Tiled / Strip VAE"]
+        VAE --> OUT["PNG Image / H.264 MP4 Video"]
     end
 ```
-
----
-
-## 🚀 Supported Models & Architectures
-
-| Model | Modality | Parameters | Native VRAM | PhobosStream Peak RAM |
-| :--- | :--- | :--- | :--- | :--- |
-| **Alibaba Wan2.1** | Text-to-Video | **14B** | ~32 GB | **< 1.2 GB** |
-| **Black Forest Labs FLUX.1** | Text-to-Image | **12B** | ~24 GB | **< 850 MB** |
-| **Tencent HunyuanVideo** | Text-to-Video | **13B** | ~28 GB | **< 1.0 GB** |
-| **THUDM CogVideoX** | Text-to-Video | **5B / 17B** | ~14GB – 36GB | **< 950 MB** |
 
 ---
 
@@ -118,96 +64,53 @@ flowchart TD
 git clone https://github.com/martianacademy/phobos-stream.git
 cd phobos-stream
 
-# Setup virtual environment with Python 3.10+
 uv venv --python 3.12
 source .venv/bin/activate
-
-# Install dependencies (Auto-detects Apple Silicon MLX / CUDA)
 uv pip install -e ".[dev]"
 ```
 
-### 2. Run Test Suite
+### 2. Run Test Suite (27 Unit & Integration Tests)
 
 ```bash
 pytest -v
 ```
 
-### 3. Run Benchmark
+### 3. Python API: Hook Any Real PyTorch DiT in 4 Lines
 
-```bash
-python examples/benchmark_streaming.py
+```python
+import torch
+from phobos_stream.streaming import BlockStreamMode, TorchBlockStreamer
+
+with torch.device("meta"):
+    model = MyDiffusionTransformer().to(torch.bfloat16)
+
+with TorchBlockStreamer(
+    model,
+    compute_device="auto",
+    mode=BlockStreamMode.MMAP_STREAM,
+    safetensors_paths=["model_bf16.safetensors"],
+):
+    output = model(latents, timestep, context)
 ```
 
 ### 4. Launch OpenAI / Sora-Compatible REST & WebSocket API
 
 ```bash
-phobos-stream serve --port 8088 --backend auto
-```
-
-Or test with the automated client:
-```bash
-python examples/test_live_server.py
+phobos-stream serve --port 8088 --manifest-path shards/manifest.json --backend auto
 ```
 
 ---
 
-## 🎨 ComfyUI Native Custom Node Integration
+## 🎨 ComfyUI Custom Node Extension (`ComfyUI-PhobosStream`)
 
-PhobosStream includes a first-class **ComfyUI Custom Node Extension** (`ComfyUI-PhobosStream`) allowing visual drag-and-drop workflows on consumer hardware without Out-Of-Memory crashes!
+**ComfyUI-PhobosStream** is registered in **ComfyUI-Manager** ([standalone repository](https://github.com/martianacademy/ComfyUI-PhobosStream)) and works out-of-the-box with zero unpublished dependencies:
 
-### 1. Installation into ComfyUI
-```bash
-# Symlink directly into your ComfyUI custom_nodes directory:
-ln -s ~/Documents/phobos-stream/ComfyUI-PhobosStream ~/ComfyUI/custom_nodes/
-```
-
-### 2. Available ComfyUI Nodes (Under `PhobosStream` Category)
-
-```mermaid
-graph LR
-    L["🌌 PhobosStream Loader<br/>(Wan2.1 / FLUX.1 / Hunyuan)"] -->|"aether_model"| S["⚡ PhobosStream Sampler<br/>(Prompt, Steps, Seed)"]
-    S -->|"latents"| V["🎞️ PhobosStream VAE Decoder"]
-    V -->|"images (IMAGE)"| P["Preview / Save Image / Video"]
-```
-
-* **`🌌 PhobosStream Model Loader (Zero-VRAM)`**: Configures architecture (Wan2.1, FLUX.1, HunyuanVideo), hidden dimension, and execution backend (`MLX`, `CUDA`, `GGUF`, `CPU`).
-* **`⚡ PhobosStream Diffusion Sampler (Disk-Stream)`**: Executes 3-stage sequential offloading and block-by-block NVMe streaming. Outputs standard ComfyUI `IMAGE` tensors compatible with `SaveImage` and `VHS_VideoCombine`.
-* **`🎞️ PhobosStream VAE Decoder`**: Modular latent-to-pixel reconstruction node.
-
----
-
-## 🔌 API Gateway Usage
-
-### Generate Video (`POST /v1/videos/generations`)
-
-```bash
-curl -X POST http://127.0.0.1:8088/v1/videos/generations \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "An astronaut riding an iridescent mechanical steed on Mars, cinematic lighting, 8k",
-    "model": "wan2.1",
-    "height": 720,
-    "width": 1280,
-    "num_frames": 49,
-    "steps": 30
-  }'
-```
-
-### Generate Image (`POST /v1/images/generations`)
-
-```bash
-curl -X POST http://127.0.0.1:8088/v1/images/generations \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "Hyperrealistic macro portrait of an owl made of obsidian and gold filigree",
-    "model": "flux-schnell",
-    "size": "1024x1024",
-    "steps": 20
-  }'
-```
+* **`🚀 Phobos Zero-VRAM 2K/4K & Video Pipeline`**: 3-stage sequential offloader supporting single & `DualCLIPLoader`, dynamic 4-ch/16-ch 4D image and 5D video latents (`Wan2.1`, `HunyuanVideo`, `FLUX`, `Lumina2`, `SDXL`), `VAEDecodeTiled`, and per-block streaming.
+* **`🔌 PhobosStream Block-Streamer (Any MODEL)`**: Drop-in `MODEL -> MODEL` hook patcher (`cpu_offload` / `mmap_stream`) compatible with standard ComfyUI workflows (LoRAs, ControlNet, WanVideo, FLUX).
+* **`🌌 PhobosStream Model Loader`**, **`⚡ PhobosStream Diffusion Sampler`**, and **`🎞️ PhobosStream Tiled VAE Decoder`**.
 
 ---
 
 ## 📜 License
 
-This project is licensed under the **MIT License** — free for commercial and personal use.
+MIT License — free for commercial and personal use.

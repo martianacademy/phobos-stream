@@ -1,7 +1,8 @@
 """Abstract base interface for execution backends (MLX, CUDA, ROCm, GGUF, CPU)."""
 
 from abc import ABC, abstractmethod
-from typing import Any, Optional, Tuple
+import contextlib
+from typing import Any, Iterator, Optional, Sequence, Tuple
 import numpy as np
 
 
@@ -37,9 +38,6 @@ class BaseBackend(ABC):
         w_shape = weight.shape
         x_last = x.shape[-1]
         if len(w_shape) == 2:
-            # Standard PyTorch/Safetensors linear weight is (out_features, in_features).
-            # If weight is (in_features, out_features) and non-square, use directly;
-            # otherwise transpose last two axes.
             if w_shape[0] == x_last and w_shape[1] != x_last:
                 out = self.matmul(x, weight)
             else:
@@ -60,6 +58,37 @@ class BaseBackend(ABC):
         if hasattr(x, "swapaxes"):
             return x.swapaxes(axis1, axis2)
         return np.swapaxes(x, axis1, axis2)
+
+    def concat(self, tensors: Sequence[Any], axis: int = 0) -> Any:
+        """Concatenate tensors along `axis` on their native backend."""
+        if not tensors:
+            raise ValueError("concat requires at least one tensor.")
+        mod_name = type(tensors[0]).__module__
+        if "mlx" in mod_name:
+            import mlx.core as mx
+
+            return mx.concatenate(list(tensors), axis=axis)
+        if "torch" in mod_name:
+            import torch
+
+            return torch.cat(list(tensors), dim=axis)
+        return np.concatenate(list(tensors), axis=axis)
+
+    def split_two(self, tensor: Any, axis: int = 0) -> Tuple[Any, Any]:
+        """Split an even-sized batch tensor into `(first_half, second_half)` along axis 0."""
+        if axis != 0:
+            raise ValueError("split_two expects axis=0 for batched conditioning.")
+        half = tensor.shape[0] // 2
+        return tensor[:half], tensor[half:]
+
+    def async_eval(self, *tensors: Any) -> None:
+        """Schedule asynchronous evaluation of tensors (mlx_lm style pipeline)."""
+        pass
+
+    @contextlib.contextmanager
+    def wired_limit(self) -> Iterator[None]:
+        """Context manager to lock recommended GPU working set size in unified memory."""
+        yield
 
     @abstractmethod
     def layer_norm(self, x: Any, weight: Any, bias: Optional[Any] = None, eps: float = 1e-5) -> Any:

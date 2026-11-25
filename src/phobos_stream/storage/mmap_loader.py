@@ -4,11 +4,11 @@ import json
 import mmap
 import struct
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 
-DTYPE_MAP = {
+DTYPE_MAP: Dict[str, Any] = {
     "F64": np.float64,
     "F32": np.float32,
     "F16": np.float16,
@@ -47,13 +47,12 @@ def _decode_fp8_e4m3(raw_u8: np.ndarray) -> np.ndarray:
 def _decode_fp8_e5m2(raw_u8: np.ndarray) -> np.ndarray:
     """Vectorized conversion of 8-bit float (E5M2) bit patterns to float32."""
     u = raw_u8.astype(np.uint16)
-    # E5M2 shares the exact 1-5-2 layout with IEEE 754 FP16 (1-5-10) shifted left by 8 bits
     fp16_bits = (u << 8).astype(np.uint16)
     return fp16_bits.view(np.float16).astype(np.float32)
 
 
 class MMapTensorLoader:
-    """Zero-copy mmap tensor reader for fast NVMe streaming."""
+    """Zero-copy mmap tensor reader supporting NumPy, PyTorch, and Apple MLX."""
 
     def __init__(self, file_path: Path) -> None:
         self.file_path = Path(file_path)
@@ -88,24 +87,26 @@ class MMapTensorLoader:
         start_rel, end_rel = self.header[name]["data_offsets"]
         return int(end_rel - start_rel)
 
-    def read_tensor(self, name: str, copy: bool = False) -> np.ndarray:
-        """Slice tensor directly from mmap buffer without full file read."""
+    def read_raw_slice(self, name: str) -> Tuple[memoryview, str, Tuple[int, ...]]:
+        """Return zero-copy `(memoryview, safetensors_dtype, shape)` for `name`."""
         if name not in self.header:
             raise KeyError(f"Tensor '{name}' not found in {self.file_path.name}")
 
         meta = self.header[name]
-        dtype_str = meta["dtype"]
+        dtype_str = str(meta["dtype"])
         if dtype_str not in DTYPE_MAP:
             raise ValueError(f"Unsupported safetensors dtype '{dtype_str}' in {self.file_path.name}")
 
-        dtype = DTYPE_MAP[dtype_str]
-        shape = tuple(meta["shape"])
+        shape = tuple(int(dim) for dim in meta["shape"])
         start_rel, end_rel = meta["data_offsets"]
+        abs_start = self.data_offset + int(start_rel)
+        abs_end = self.data_offset + int(end_rel)
+        return memoryview(self.mmap_obj)[abs_start:abs_end], dtype_str, shape
 
-        abs_start = self.data_offset + start_rel
-        abs_end = self.data_offset + end_rel
-
-        tensor_bytes = memoryview(self.mmap_obj)[abs_start:abs_end]
+    def read_tensor(self, name: str, copy: bool = False) -> np.ndarray:
+        """Slice tensor from mmap buffer as a NumPy array (decoding BF16/FP8 to float32)."""
+        tensor_bytes, dtype_str, shape = self.read_raw_slice(name)
+        dtype = DTYPE_MAP[dtype_str]
         arr = np.frombuffer(tensor_bytes, dtype=dtype)
 
         if dtype_str == "BF16":
@@ -119,6 +120,59 @@ class MMapTensorLoader:
 
         return arr.reshape(shape)
 
+    def read_torch_tensor(
+        self,
+        name: str,
+        device: str = "cpu",
+        target_dtype: Optional[Any] = None,
+    ) -> Any:
+        """Materialize a PyTorch tensor in native precision without BF16->FP32 expansion."""
+        import torch
+
+        tensor_bytes, dtype_str, shape = self.read_raw_slice(name)
+        if dtype_str == "BF16":
+            raw_i16 = np.frombuffer(tensor_bytes, dtype=np.int16).copy().reshape(shape)
+            tensor = torch.from_numpy(raw_i16).view(torch.bfloat16)
+        elif dtype_str == "F16":
+            raw_f16 = np.frombuffer(tensor_bytes, dtype=np.float16).copy().reshape(shape)
+            tensor = torch.from_numpy(raw_f16)
+        elif dtype_str == "F32":
+            raw_f32 = np.frombuffer(tensor_bytes, dtype=np.float32).copy().reshape(shape)
+            tensor = torch.from_numpy(raw_f32)
+        elif dtype_str in ("F8_E4M3", "F8_E5M2"):
+            decoded = self.read_tensor(name, copy=False)
+            tensor = torch.from_numpy(decoded)
+        else:
+            tensor = torch.from_numpy(self.read_tensor(name, copy=True))
+
+        if target_dtype is not None and tensor.dtype != target_dtype:
+            tensor = tensor.to(dtype=target_dtype)
+
+        target_dev = torch.device(device)
+        if tensor.device != target_dev:
+            non_blocking = target_dev.type == "cuda"
+            tensor = tensor.to(device=target_dev, non_blocking=non_blocking)
+        return tensor
+
+    def read_mlx_array(self, name: str, target_dtype: Optional[Any] = None) -> Any:
+        """Materialize an Apple MLX array preserving native BF16/FP16 unified memory layout."""
+        import mlx.core as mx
+
+        tensor_bytes, dtype_str, shape = self.read_raw_slice(name)
+        if dtype_str == "BF16":
+            raw_u16 = np.frombuffer(tensor_bytes, dtype=np.uint16).reshape(shape)
+            arr = mx.array(raw_u16).view(mx.bfloat16)
+        elif dtype_str == "F16":
+            arr = mx.array(np.frombuffer(tensor_bytes, dtype=np.float16).reshape(shape))
+        elif dtype_str == "F32":
+            arr = mx.array(np.frombuffer(tensor_bytes, dtype=np.float32).reshape(shape))
+        else:
+            arr = mx.array(self.read_tensor(name, copy=False))
+
+        if target_dtype is not None and arr.dtype != target_dtype:
+            arr = arr.astype(target_dtype)
+        return arr
+
     def read_all_tensors(self, copy: bool = False) -> Dict[str, np.ndarray]:
         """Read all tensors in this file into a dictionary."""
         return {name: self.read_tensor(name, copy=copy) for name in self.get_tensor_names()}
@@ -129,8 +183,6 @@ class MMapTensorLoader:
             try:
                 self.mmap_obj.close()
             except BufferError:
-                # Zero-copy numpy views are still referencing the mmap buffer;
-                # OS will unmap automatically when views are garbage-collected.
                 pass
         if not self.file_obj.closed:
             self.file_obj.close()

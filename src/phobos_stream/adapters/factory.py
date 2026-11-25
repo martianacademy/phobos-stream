@@ -12,15 +12,16 @@ def get_adapter(
     architecture: str,
     backend: BaseBackend,
     hidden_size: int = 4096,
+    allow_synthetic: bool = False,
 ) -> BaseModelAdapter:
     """Resolve and return model adapter for the given architecture."""
     arch = architecture.lower()
-    if "wan" in arch:
-        return WanAdapter(backend, hidden_size=hidden_size)
+    if "wan" in arch or "lumina" in arch or "z_image" in arch or "z-image" in arch:
+        return WanAdapter(backend, hidden_size=hidden_size, allow_synthetic=allow_synthetic)
     if "flux" in arch:
-        return FluxAdapter(backend, hidden_size=hidden_size)
+        return FluxAdapter(backend, hidden_size=hidden_size, allow_synthetic=allow_synthetic)
     if "hunyuan" in arch:
-        return HunyuanAdapter(backend, hidden_size=hidden_size)
+        return HunyuanAdapter(backend, hidden_size=hidden_size, allow_synthetic=allow_synthetic)
     if "cogvideo" in arch:
-        return CogVideoXAdapter(backend, hidden_size=hidden_size)
-    return WanAdapter(backend, hidden_size=hidden_size)
+        return CogVideoXAdapter(backend, hidden_size=hidden_size, allow_synthetic=allow_synthetic)
+    return WanAdapter(backend, hidden_size=hidden_size, allow_synthetic=allow_synthetic)

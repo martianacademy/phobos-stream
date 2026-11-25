@@ -9,14 +9,14 @@ from pathlib import Path
 from PIL import Image
 import torch
 
-COMFY_DIR = "/Users/suru.martian/ComfyUI-Installs/ComfyUI/ComfyUI"
+COMFY_DIR = str(Path.home() / "ComfyUI-Installs/ComfyUI/ComfyUI"
 if COMFY_DIR not in sys.path:
     sys.path.insert(0, COMFY_DIR)
 
 import folder_paths
-folder_paths.add_model_folder_path("diffusion_models", "/Users/suru.martian/ComfyUI-Shared/models/diffusion_models")
-folder_paths.add_model_folder_path("text_encoders", "/Users/suru.martian/ComfyUI-Shared/models/text_encoders")
-folder_paths.add_model_folder_path("vae", "/Users/suru.martian/ComfyUI-Shared/models/vae")
+folder_paths.add_model_folder_path("diffusion_models", str(Path.home() / "ComfyUI-Shared/models/diffusion_models")
+folder_paths.add_model_folder_path("text_encoders", str(Path.home() / "ComfyUI-Shared/models/text_encoders")
+folder_paths.add_model_folder_path("vae", str(Path.home() / "ComfyUI-Shared/models/vae")
 
 import comfy.model_management as mm
 import nodes
@@ -195,7 +195,7 @@ def run_direct_monolithic(out_dir: Path) -> dict:
 
 
 if __name__ == "__main__":
-    out_dir = Path("/Users/suru.martian/Documents/phobos-stream/outputs")
+    out_dir = Path(str(Path(__file__).resolve().parent.parent / "outputs"))
     out_dir.mkdir(parents=True, exist_ok=True)
     res_phobos = run_phobos_stage_offloaded(out_dir)
     res_direct = run_direct_monolithic(out_dir)

@@ -1,4 +1,4 @@
-"""Tests for architecture adapters (Wan2.1, FLUX.1, HunyuanVideo, CogVideoX)."""
+"""Tests for architecture adapters and strict non-synthetic weight enforcement."""
 
 import numpy as np
 import pytest
@@ -23,9 +23,16 @@ def test_adapter_factory() -> None:
     assert isinstance(cogvideo, CogVideoXAdapter)
 
 
-def test_wan_adapter_extract_weights() -> None:
+def test_strict_adapter_rejects_missing_weights_by_default() -> None:
     backend = GGUFBackend(device="cpu")
-    adapter = WanAdapter(backend, hidden_size=64)
+    strict_adapter = WanAdapter(backend, hidden_size=32)
+    with pytest.raises(KeyError, match="allow_synthetic=False"):
+        strict_adapter.extract_block_weights(0, {})
+
+
+def test_wan_adapter_extract_weights_with_explicit_synthetic_opt_in() -> None:
+    backend = GGUFBackend(device="cpu")
+    adapter = WanAdapter(backend, hidden_size=64, allow_synthetic=True)
 
     raw_tensors = {
         "blocks.0.self_attn.q_proj.weight": np.random.randn(64, 64).astype(np.float32),
@@ -35,5 +42,4 @@ def test_wan_adapter_extract_weights() -> None:
     block_weights = adapter.extract_block_weights(0, raw_tensors)
     assert block_weights.self_attn.q_proj.shape == (64, 64)
     assert block_weights.mlp.gate_proj.shape == (64, 128)
-    # Fallback weights must be non-zero so unsharded blocks actively transform latents
     assert np.any(block_weights.self_attn.k_proj != 0.0)

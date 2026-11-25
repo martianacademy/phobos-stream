@@ -11,9 +11,15 @@ from phobos_stream.models.dit_block import DiTBlockWeights
 class BaseModelAdapter(ABC):
     """Abstract adapter mapping model-specific safetensors weights to DiTBlockWeights."""
 
-    def __init__(self, backend: BaseBackend, hidden_size: int = 4096) -> None:
+    def __init__(
+        self,
+        backend: BaseBackend,
+        hidden_size: int = 4096,
+        allow_synthetic: bool = False,
+    ) -> None:
         self.backend = backend
         self.hidden_size = hidden_size
+        self.allow_synthetic = allow_synthetic
         self._synthetic_cache: Dict[Tuple[int, str, Tuple[int, ...]], Any] = {}
 
     @property
@@ -23,7 +29,7 @@ class BaseModelAdapter(ABC):
         pass
 
     def _synthesize_weight(self, block_id: int, suffix: str, shape: Tuple[int, ...]) -> Any:
-        """Synthesize deterministic Xavier-scaled weight or unit norm vector when unsharded."""
+        """Synthesize deterministic Xavier-scaled weight ONLY when `allow_synthetic=True`."""
         cache_key = (block_id, suffix, shape)
         if cache_key in self._synthetic_cache:
             return self._synthetic_cache[cache_key]
@@ -51,13 +57,19 @@ class BaseModelAdapter(ABC):
         suffix: str,
         default_shape: Tuple[int, ...],
     ) -> Any:
-        """Look up a tensor by exact key or suffix match, falling back to scaled weights."""
+        """Look up a tensor by exact key or suffix match; raise KeyError if missing in strict mode."""
         key = f"{prefix}{suffix}"
         if key in raw_tensors:
             return self.backend.convert_from_numpy(raw_tensors[key])
         for k, v in raw_tensors.items():
             if k.endswith(suffix) or suffix in k:
                 return self.backend.convert_from_numpy(v)
+
+        if not self.allow_synthetic:
+            raise KeyError(
+                f"Missing required weight tensor '{key}' for block {block_id} on architecture "
+                f"'{self.architecture_name}' (allow_synthetic=False)."
+            )
         return self._synthesize_weight(block_id, suffix, default_shape)
 
     @abstractmethod

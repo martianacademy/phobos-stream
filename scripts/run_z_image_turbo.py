@@ -6,16 +6,16 @@ import time
 from pathlib import Path
 
 # Add ComfyUI directory to sys.path
-COMFY_DIR = "/Users/suru.martian/ComfyUI-Installs/ComfyUI/ComfyUI"
+COMFY_DIR = str(Path.home() / "ComfyUI-Installs/ComfyUI/ComfyUI"
 if COMFY_DIR not in sys.path:
     sys.path.insert(0, COMFY_DIR)
 
 import folder_paths
 
 # Register model search directories
-folder_paths.add_model_folder_path("diffusion_models", "/Users/suru.martian/ComfyUI-Shared/models/diffusion_models")
-folder_paths.add_model_folder_path("text_encoders", "/Users/suru.martian/ComfyUI-Shared/models/text_encoders")
-folder_paths.add_model_folder_path("vae", "/Users/suru.martian/ComfyUI-Shared/models/vae")
+folder_paths.add_model_folder_path("diffusion_models", str(Path.home() / "ComfyUI-Shared/models/diffusion_models")
+folder_paths.add_model_folder_path("text_encoders", str(Path.home() / "ComfyUI-Shared/models/text_encoders")
+folder_paths.add_model_folder_path("vae", str(Path.home() / "ComfyUI-Shared/models/vae")
 
 import nodes
 from comfy_extras.nodes_model_advanced import ModelSamplingAuraFlow
@@ -25,7 +25,7 @@ from PIL import Image
 
 def benchmark_z_image_turbo() -> None:
     print("=== Z-Image-Turbo Apple Silicon Metal (MPS) Benchmark ===")
-    out_dir = Path("/Users/suru.martian/Documents/phobos-stream/outputs")
+    out_dir = Path(str(Path(__file__).resolve().parent.parent / "outputs"))
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Load UNET (DiT)

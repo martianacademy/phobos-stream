@@ -130,6 +130,7 @@ class DiffusionSharder:
             text_encoder_path=manifest.text_encoder_path,
             vae_path=manifest.vae_path,
             blocks=new_blocks,
+            allow_synthetic=manifest.allow_synthetic,
         )
         manifest_path = self.output_dir / "manifest.json"
         partitioned_manifest.save(manifest_path)

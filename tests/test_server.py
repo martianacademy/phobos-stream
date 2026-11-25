@@ -1,4 +1,4 @@
-"""Tests for FastAPI HTTP gateway endpoints."""
+"""Tests for FastAPI HTTP gateway endpoints and real MP4 video output."""
 
 from pathlib import Path
 from fastapi.testclient import TestClient
@@ -15,6 +15,7 @@ def client(tmp_path: Path) -> TestClient:
         architecture="wan2.1",
         num_blocks=2,
         hidden_size=64,
+        allow_synthetic=True,
     )
     app = create_app(manifest=manifest, backend_type=BackendType.CPU, output_dir=tmp_path)
     return TestClient(app)
@@ -48,16 +49,14 @@ def test_image_generation_endpoint(client: TestClient) -> None:
     res = client.post("/v1/images/generations", json=payload)
     assert res.status_code == 200
     data = res.json()
-    assert "data" in data
     assert len(data["data"]) == 1
     assert data["data"][0]["b64_json"] is not None
-    # Verify the generated PNG file is actually served from /outputs
     img_res = client.get(data["data"][0]["url"])
     assert img_res.status_code == 200
     assert img_res.content[:8] == b"\x89PNG\r\n\x1a\n"
 
 
-def test_video_generation_endpoint(client: TestClient) -> None:
+def test_video_generation_endpoint_produces_real_mp4(client: TestClient) -> None:
     payload = {
         "prompt": "Soaring hawk over canyons",
         "model": "wan2.1",
@@ -70,6 +69,7 @@ def test_video_generation_endpoint(client: TestClient) -> None:
     assert res.status_code == 200
     data = res.json()
     assert data["status"] == "completed"
-    assert "video_url" in data
+    assert data["video_url"].endswith(".mp4")
     vid_res = client.get(data["video_url"])
     assert vid_res.status_code == 200
+    assert b"ftyp" in vid_res.content[:32]

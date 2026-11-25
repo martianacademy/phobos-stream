@@ -115,11 +115,13 @@ python examples/test_live_server.py
 - **Dedicated Repo:** [https://github.com/martianacademy/ComfyUI-PhobosStream](https://github.com/martianacademy/ComfyUI-PhobosStream)
 - **Official ComfyUI Registry PR:** [Comfy-Org/ComfyUI-Manager #3453](https://github.com/Comfy-Org/ComfyUI-Manager/pull/3453)
 - **Local Adapter Location:** `~/Documents/phobos-stream/ComfyUI-PhobosStream`
-- **Installed Symlink:** `/Users/suru.martian/ComfyUI-Installs/ComfyUI/ComfyUI/custom_nodes/ComfyUI-PhobosStream`
-- **Nodes Registered:**
+- **Installed Symlink:** `~/ComfyUI/custom_nodes/ComfyUI-PhobosStream` (or installed standalone via ComfyUI-Manager)
+- **Nodes Registered (`PhobosStream` Category):**
+  - `PhobosStageOffloadPipeline`: `🚀 Phobos Zero-VRAM 2K/4K & Video Pipeline`
+  - `PhobosBlockStreamPatcher`: `🔌 PhobosStream Block-Streamer (Any MODEL)`
   - `PhobosStreamLoader`: `🌌 PhobosStream Model Loader (Zero-VRAM)`
-  - `PhobosStreamSampler`: `⚡ PhobosStream Diffusion Sampler (Disk-Stream)`
-  - `PhobosStreamVAEDecode`: `🎞️ PhobosStream VAE Decoder`
+  - `PhobosStreamSampler`: `⚡ PhobosStream Diffusion Sampler (Stage-Offload)`
+  - `PhobosStreamVAEDecode`: `🎞️ PhobosStream Tiled VAE Decoder`
 - **Output Compatibility:** Emits standard `(Batch, H, W, 3)` `IMAGE` tensors compatible with standard ComfyUI `SaveImage` and `Video Combine` nodes.
 
 ---

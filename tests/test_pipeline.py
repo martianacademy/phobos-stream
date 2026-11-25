@@ -1,4 +1,4 @@
-"""Tests for diffusion scheduler, offloader, and full streaming engine."""
+"""Tests for diffusion scheduler, offloader strictness, and streaming engine."""
 
 import numpy as np
 import pytest
@@ -20,12 +20,27 @@ def test_flow_matching_scheduler() -> None:
     assert next_sample.shape == (2, 4)
 
 
-def test_phobos_stream_engine_generate() -> None:
+def test_phobos_stream_engine_rejects_unconfigured_weights_when_strict() -> None:
+    manifest = ModelShardsManifest(
+        model_name="strict-wan2.1",
+        architecture="wan2.1",
+        num_blocks=2,
+        hidden_size=64,
+        allow_synthetic=False,
+    )
+    engine = PhobosStreamEngine(manifest=manifest, backend_type=BackendType.CPU)
+    config = GenerationConfig(prompt="Test strict error", height=128, width=128, num_frames=1, steps=1)
+    with pytest.raises(FileNotFoundError):
+        engine.generate(config)
+
+
+def test_phobos_stream_engine_generate_explicit_synthetic() -> None:
     manifest = ModelShardsManifest(
         model_name="test-wan2.1",
         architecture="wan2.1",
         num_blocks=2,
         hidden_size=64,
+        allow_synthetic=True,
     )
     engine = PhobosStreamEngine(manifest=manifest, backend_type=BackendType.CPU)
 
@@ -47,7 +62,6 @@ def test_phobos_stream_engine_generate() -> None:
     frames, metrics = engine.generate(config, progress_callback=callback)
 
     assert frames is not None
-    # Verify exact (T, H, W, 3) uint8 RGB shape
     assert frames.shape == (5, 128, 128, 3)
     assert frames.dtype == np.uint8
     assert metrics.steps_completed == 2

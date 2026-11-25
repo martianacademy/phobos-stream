@@ -16,7 +16,7 @@ from phobos_stream.storage.mmap_loader import MMapTensorLoader
 
 
 class PipelineOffloader:
-    """Orchestrates stage-wise offloading and block-by-block NVMe streaming."""
+    """Orchestrates stage-wise offloading and block-by-block NVMe shard streaming."""
 
     def __init__(
         self,
@@ -27,9 +27,14 @@ class PipelineOffloader:
         self.manifest = manifest
         self.adapter = adapter
         self.backend = backend
+        num_heads = (
+            max(1, manifest.hidden_size // 128)
+            if manifest.hidden_size >= 128
+            else max(1, manifest.hidden_size // 16)
+        )
         self.dit_block_module = DiTBlock(
             hidden_size=manifest.hidden_size,
-            num_heads=max(1, manifest.hidden_size // 128) if manifest.hidden_size >= 128 else max(1, manifest.hidden_size // 16),
+            num_heads=num_heads,
             backend=backend,
         )
         self.total_bytes_streamed = 0
@@ -52,44 +57,45 @@ class PipelineOffloader:
         start = time.perf_counter()
         dim = self.manifest.hidden_size
 
-        # Tokenize prompt into normalized words
         tokens = re.findall(r"[a-zA-Z0-9_]+|[^\s\w]", prompt.lower())[:max_seq_len]
         if not tokens:
             tokens = ["<bos>"]
 
-        # If a real text_encoder safetensors file is configured in manifest, slice token table
         emb_matrix = np.zeros((1, max_seq_len, dim), dtype=np.float32)
         loaded_from_safetensors = False
 
         if self.manifest.text_encoder_path and Path(self.manifest.text_encoder_path).exists():
-            try:
-                with MMapTensorLoader(Path(self.manifest.text_encoder_path)) as te_loader:
-                    for t_name in te_loader.get_tensor_names():
-                        if "embed_tokens" in t_name or "wte" in t_name or "shared" in t_name or "token_embedding" in t_name:
-                            meta = te_loader.header[t_name]
-                            vocab_size, v_dim = meta["shape"][0], meta["shape"][-1]
-                            start_rel, _ = meta["data_offsets"]
-                            row_bytes = v_dim * (2 if meta["dtype"] in ("BF16", "F16") else 4)
-                            for idx, tok in enumerate(tokens):
-                                tok_id = int.from_bytes(hashlib.md5(tok.encode("utf-8")).digest()[:4], "little") % vocab_size
-                                row_start = te_loader.data_offset + start_rel + (tok_id * row_bytes)
-                                row_view = memoryview(te_loader.mmap_obj)[row_start : row_start + row_bytes]
-                                if meta["dtype"] == "BF16":
-                                    vec = (np.frombuffer(row_view, dtype=np.uint16).astype(np.uint32) << 16).view(np.float32)
-                                elif meta["dtype"] == "F16":
-                                    vec = np.frombuffer(row_view, dtype=np.float16).astype(np.float32)
-                                else:
-                                    vec = np.frombuffer(row_view, dtype=np.float32).copy()
-                                if v_dim >= dim:
-                                    emb_matrix[0, idx, :] = vec[:dim]
-                                else:
-                                    emb_matrix[0, idx, :v_dim] = vec
-                            loaded_from_safetensors = True
-                            break
-            except Exception:
-                loaded_from_safetensors = False
+            with MMapTensorLoader(Path(self.manifest.text_encoder_path)) as te_loader:
+                for t_name in te_loader.get_tensor_names():
+                    if any(tag in t_name for tag in ("embed_tokens", "wte", "shared", "token_embedding")):
+                        meta = te_loader.header[t_name]
+                        vocab_size, v_dim = int(meta["shape"][0]), int(meta["shape"][-1])
+                        start_rel, _ = meta["data_offsets"]
+                        row_bytes = v_dim * (2 if meta["dtype"] in ("BF16", "F16") else 4)
+                        for idx, tok in enumerate(tokens):
+                            tok_id = int.from_bytes(hashlib.md5(tok.encode("utf-8")).digest()[:4], "little") % vocab_size
+                            row_start = te_loader.data_offset + int(start_rel) + (tok_id * row_bytes)
+                            row_view = memoryview(te_loader.mmap_obj)[row_start : row_start + row_bytes]
+                            if meta["dtype"] == "BF16":
+                                vec = (np.frombuffer(row_view, dtype=np.uint16).astype(np.uint32) << 16).view(np.float32)
+                            elif meta["dtype"] == "F16":
+                                vec = np.frombuffer(row_view, dtype=np.float16).astype(np.float32)
+                            else:
+                                vec = np.frombuffer(row_view, dtype=np.float32).copy()
+                            if v_dim >= dim:
+                                emb_matrix[0, idx, :] = vec[:dim]
+                            else:
+                                emb_matrix[0, idx, :v_dim] = vec
+                        loaded_from_safetensors = True
+                        break
 
         if not loaded_from_safetensors:
+            if not self.manifest.allow_synthetic:
+                raise FileNotFoundError(
+                    f"Manifest '{self.manifest.model_name}' has no valid `text_encoder_path` and "
+                    "`allow_synthetic=False`. Use `StageSequentialRunner` / ComfyUI stage offload "
+                    "for real text encoders, or set `allow_synthetic=True` for synthetic benchmarks."
+                )
             pos = np.arange(max_seq_len, dtype=np.float32)[:, None]
             div = np.exp(-np.log(10000.0) * np.arange(0, dim, 2, dtype=np.float32) / max(2, dim))
             pos_emb = np.zeros((max_seq_len, dim), dtype=np.float32)
@@ -125,15 +131,19 @@ class PipelineOffloader:
         x = latents
         bytes_read = 0
 
-        num_blocks = self.manifest.num_blocks
-        for b_id in range(num_blocks):
+        for b_id in range(self.manifest.num_blocks):
             block_meta = self.manifest.blocks.get(b_id)
             if block_meta and Path(block_meta.filename).exists():
                 loader = self._get_loader(block_meta.filename)
                 raw_tensors = {t: loader.read_tensor(t, copy=False) for t in block_meta.tensor_names}
                 bytes_read += sum(loader.get_tensor_byte_size(t) for t in block_meta.tensor_names)
-            else:
+            elif self.manifest.allow_synthetic:
                 raw_tensors = {}
+            else:
+                raise FileNotFoundError(
+                    f"Missing shard file for block {b_id} in manifest '{self.manifest.model_name}' "
+                    "(allow_synthetic=False)."
+                )
 
             weights = self.adapter.extract_block_weights(b_id, raw_tensors)
             x = self.dit_block_module.forward(
@@ -160,9 +170,20 @@ class PipelineOffloader:
         width: int,
         num_frames: int,
     ) -> Tuple[np.ndarray, float]:
-        """Stage 3: Unpatchify and decode latent tokens into (T, H, W, 3) RGB uint8 frames."""
+        """Stage 3: Unpatchify latent tokens into `(T, H, W, 3)` uint8 RGB frames."""
+        if not self.manifest.allow_synthetic and (
+            not self.manifest.vae_path or not Path(self.manifest.vae_path).exists()
+        ):
+            raise FileNotFoundError(
+                f"Manifest '{self.manifest.model_name}' has no valid `vae_path` and `allow_synthetic=False`. "
+                "Use `StageSequentialRunner` / ComfyUI VAE decoder for real VAE weights, or set "
+                "`allow_synthetic=True` for synthetic benchmarks."
+            )
+
         start = time.perf_counter()
         lat_np = self.backend.to_numpy(latents).astype(np.float32)
+        if lat_np.ndim >= 3:
+            lat_np = lat_np[0]
 
         t_len = max(1, (num_frames - 1) // 4 + 1) if num_frames > 1 else 1
         h_len = max(1, height // 16)

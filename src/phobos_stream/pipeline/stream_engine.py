@@ -1,4 +1,4 @@
-"""Core diffusion streaming generation engine."""
+"""Core diffusion streaming generation engine with batched CFG & mlx_lm pipeline optimizations."""
 
 from typing import Callable, Optional, Tuple
 import time
@@ -23,7 +23,12 @@ class PhobosStreamEngine:
     ) -> None:
         self.manifest = manifest
         self.backend = get_backend(backend_type)
-        self.adapter = get_adapter(manifest.architecture, self.backend, hidden_size=manifest.hidden_size)
+        self.adapter = get_adapter(
+            manifest.architecture,
+            self.backend,
+            hidden_size=manifest.hidden_size,
+            allow_synthetic=manifest.allow_synthetic,
+        )
         self.offloader = PipelineOffloader(manifest, self.adapter, self.backend)
         self.rotary = RotaryEmbedding3D(dim=manifest.hidden_size, backend=self.backend)
 
@@ -32,7 +37,7 @@ class PhobosStreamEngine:
         config: GenerationConfig,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> Tuple[np.ndarray, PipelineMetrics]:
-        """Execute full video or image generation pipeline returning (T, H, W, 3) RGB frames."""
+        """Execute full video or image generation pipeline returning `(T, H, W, 3)` RGB frames."""
         rgb_frames, _, metrics = self.generate_with_latents(config, progress_callback=progress_callback)
         return rgb_frames, metrics
 
@@ -41,7 +46,7 @@ class PhobosStreamEngine:
         config: GenerationConfig,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> Tuple[np.ndarray, np.ndarray, PipelineMetrics]:
-        """Execute full pipeline and return both decoded (T, H, W, 3) RGB frames and raw latents."""
+        """Execute full pipeline and return decoded `(T, H, W, 3)` RGB frames and raw latents."""
         metrics = PipelineMetrics()
         start_total = time.perf_counter()
 
@@ -67,54 +72,51 @@ class PhobosStreamEngine:
             (1, seq_len, self.manifest.hidden_size),
             seed=config.seed,
         )
-
-        # 3D RoPE position embeddings
         cos, sin = self.rotary.compute_frequencies(t_len=t_len, h_len=h_len, w_len=w_len)
 
-        # 3. Iterative Denoising Loop
+        # 3. Iterative Denoising Loop (Single-pass batched CFG halves shard disk I/O)
         scheduler = FlowMatchingScheduler(num_steps=config.steps)
         timesteps = scheduler.get_timesteps()
 
         start_denoise = time.perf_counter()
         total_io_bytes = 0
+        use_cfg = neg_emb is not None and config.guidance_scale > 1.0
+        batched_ctx = self.backend.concat([prompt_emb, neg_emb], axis=0) if use_cfg else prompt_emb
 
-        for step_idx, t in enumerate(timesteps):
-            if progress_callback:
-                progress_callback(step_idx + 1, config.steps, PipelineStage.DENOISING.value)
+        with self.backend.wired_limit():
+            for step_idx, t in enumerate(timesteps):
+                if progress_callback:
+                    progress_callback(step_idx + 1, config.steps, PipelineStage.DENOISING.value)
 
-            model_out, io_bytes = self.offloader.stream_dit_step(
-                latents=latents,
-                context=prompt_emb,
-                timestep=t,
-                cos=cos,
-                sin=sin,
-                block_stream=config.block_stream,
-            )
-            total_io_bytes += io_bytes
+                if use_cfg:
+                    batched_latents = self.backend.concat([latents, latents], axis=0)
+                    batched_out, io_bytes = self.offloader.stream_dit_step(
+                        latents=batched_latents,
+                        context=batched_ctx,
+                        timestep=t,
+                        cos=cos,
+                        sin=sin,
+                        block_stream=config.block_stream,
+                    )
+                    total_io_bytes += io_bytes
+                    cond_out, uncond_out = self.backend.split_two(batched_out, axis=0)
+                    guided_out = uncond_out + float(config.guidance_scale) * (cond_out - uncond_out)
+                else:
+                    guided_out, io_bytes = self.offloader.stream_dit_step(
+                        latents=latents,
+                        context=batched_ctx,
+                        timestep=t,
+                        cos=cos,
+                        sin=sin,
+                        block_stream=config.block_stream,
+                    )
+                    total_io_bytes += io_bytes
 
-            out_np = self.backend.to_numpy(model_out)
+                latents = scheduler.step(model_output=guided_out, timestep=t, sample=latents)
+                self.backend.async_eval(latents)
+                metrics.steps_completed = step_idx + 1
 
-            # Classifier-Free Guidance (CFG) when negative prompt is active
-            if neg_emb is not None and config.guidance_scale > 1.0:
-                uncond_out, uncond_io = self.offloader.stream_dit_step(
-                    latents=latents,
-                    context=neg_emb,
-                    timestep=t,
-                    cos=cos,
-                    sin=sin,
-                    block_stream=config.block_stream,
-                )
-                total_io_bytes += uncond_io
-                uncond_np = self.backend.to_numpy(uncond_out)
-                out_np = uncond_np + config.guidance_scale * (out_np - uncond_np)
-
-            # ODE update step
-            lat_np = self.backend.to_numpy(latents)
-            prev_np = scheduler.step(model_output=out_np, timestep=t, sample=lat_np)
-            latents = self.backend.convert_from_numpy(prev_np)
-
-            metrics.steps_completed = step_idx + 1
-
+        self.backend.synchronize()
         metrics.denoising_time_sec = time.perf_counter() - start_denoise
         final_latents_np = self.backend.to_numpy(latents)
 
