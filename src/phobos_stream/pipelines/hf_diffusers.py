@@ -16,6 +16,26 @@ def _clean_prompt_text(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned)
 
 
+def _resolve_cached_safetensors(model_id_or_path: str, subfolder: str) -> list[Path]:
+    """Locate cached `.safetensors` shards for `subfolder` without triggering extra downloads."""
+    local_dir = Path(model_id_or_path)
+    if local_dir.is_dir():
+        return sorted((local_dir / subfolder).glob("*.safetensors"))
+    try:
+        from huggingface_hub import snapshot_download
+
+        snap_root = Path(
+            snapshot_download(
+                model_id_or_path,
+                allow_patterns=[f"{subfolder}/*.safetensors"],
+                local_files_only=True,
+            )
+        )
+        return sorted((snap_root / subfolder).glob("*.safetensors"))
+    except Exception:
+        return []
+
+
 class HFDiffusersStreamEngine:
     """Executes real HuggingFace Diffusers video/image pipelines under strict VRAM budgets."""
 
@@ -128,10 +148,12 @@ class HFDiffusersStreamEngine:
                 low_cpu_mem_usage=True,
             ).eval()
 
+            te_shards = _resolve_cached_safetensors(self.model_id, "text_encoder")
             with TorchBlockStreamer(
                 text_encoder,
                 compute_device=self.device,
                 mode=BlockStreamMode.CPU_OFFLOAD,
+                safetensors_paths=te_shards,
             ):
                 pos_emb = self._encode_umt5_prompt(tokenizer, text_encoder, config.prompt)
                 neg_emb = None
@@ -163,10 +185,12 @@ class HFDiffusersStreamEngine:
             w_aligned = max(128, (config.width // 16) * 16)
             f_aligned = 1 if config.num_frames <= 1 else max(5, ((config.num_frames - 1) // 4) * 4 + 1)
 
+            dit_shards = _resolve_cached_safetensors(self.model_id, "transformer")
             with TorchBlockStreamer(
                 transformer,
                 compute_device=self.device,
                 mode=self.stream_mode,
+                safetensors_paths=dit_shards,
                 vram_budget_mb=self.vram_budget_mb,
                 ram_budget_mb=self.ram_budget_mb,
                 activation_reserve_mb=1536,

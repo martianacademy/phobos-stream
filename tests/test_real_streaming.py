@@ -321,3 +321,29 @@ def test_hybrid_budget_three_tier_residency_and_exact_equivalence(tmp_path: Path
         assert streamer.blocks_executed == 6
 
     assert torch.allclose(expected, actual, atol=1e-5)
+
+
+def test_non_persistent_buffers_move_to_active_device() -> None:
+    """Verify non-persistent buffers (like Wan2.1/FLUX RoPE caches) move off CPU onto accelerator."""
+    torch = pytest.importorskip("torch")
+    import torch.nn as nn
+
+    class RoPEModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.register_buffer("rope_cos", torch.ones(1, 8, 16), persistent=False)
+            self.blocks = nn.ModuleList([nn.Linear(16, 16) for _ in range(2)])
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            h = x * self.rope_cos
+            for blk in self.blocks:
+                h = blk(h)
+            return h
+
+    target_dev = "mps" if (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()) else "cpu"
+    model = RoPEModel().eval()
+    with TorchBlockStreamer(model, compute_device=target_dev, mode=BlockStreamMode.CPU_OFFLOAD):
+        x = torch.randn(1, 8, 16, device=target_dev)
+        with torch.no_grad():
+            out = model(x)
+        assert out.device.type == torch.device(target_dev).type

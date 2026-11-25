@@ -1,39 +1,22 @@
 """Universal hook-based block streamer for PyTorch Diffusion Transformers, T5/CLIP, & UNets."""
 
+from collections import deque
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
+from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple, Union
 
 from phobos_stream.storage.mmap_loader import MMapTensorLoader
-from phobos_stream.streaming.budget_planner import BlockTier, HybridBudgetPlan, MemoryBudgetPlanner
-
-
-KNOWN_BLOCK_CONTAINERS: Set[str] = {
-    "blocks",
-    "block",
-    "layers",
-    "double_blocks",
-    "single_blocks",
-    "single_transformer_blocks",
-    "transformer_blocks",
-    "noise_refiner",
-    "context_refiner",
-    "joint_blocks",
-    "spatial_blocks",
-    "temporal_blocks",
-    "v_blocks",
-    "encoder_layers",
-    "h",
-}
-
-STRIP_MODEL_PREFIXES: Tuple[str, ...] = (
-    "model.diffusion_model.",
-    "diffusion_model.",
-    "transformer.",
-    "unet.",
-    "encoder.",
-    "model.",
+from phobos_stream.streaming.block_discovery import (
+    KNOWN_BLOCK_CONTAINERS,
+    STRIP_MODEL_PREFIXES,
+    assign_tensor,
+    build_safetensors_index,
+    discover_block_modules,
+    iter_persistent_module_tensors,
+    lookup_safetensors_key,
+    move_non_persistent_buffers,
 )
+from phobos_stream.streaming.budget_planner import BlockTier, HybridBudgetPlan, MemoryBudgetPlanner
 
 
 class BlockStreamMode(str, Enum):
@@ -43,70 +26,6 @@ class BlockStreamMode(str, Enum):
     CPU_OFFLOAD = "cpu_offload"
     MMAP_STREAM = "mmap_stream"
     HYBRID_BUDGET = "hybrid_budget"
-
-
-def _resolve_subattr(root: Any, dotted_path: str) -> Tuple[Any, str]:
-    parts = dotted_path.split(".")
-    cur = root
-    for part in parts[:-1]:
-        cur = getattr(cur, part)
-    return cur, parts[-1]
-
-
-def _assign_tensor(root: Any, dotted_path: str, new_tensor: Any, is_param: bool) -> None:
-    """Assign a parameter or buffer tensor safely, including on `meta`-device skeletons."""
-    import torch.nn as nn
-
-    parent, leaf = _resolve_subattr(root, dotted_path)
-    if is_param:
-        existing = parent._parameters.get(leaf)
-        if existing is None or getattr(existing, "is_meta", False):
-            parent._parameters[leaf] = nn.Parameter(new_tensor, requires_grad=False)
-        else:
-            existing.data = new_tensor
-    else:
-        existing = parent._buffers.get(leaf)
-        if existing is None or getattr(existing, "is_meta", False):
-            parent._buffers[leaf] = new_tensor
-        else:
-            existing.data = new_tensor
-
-
-def discover_block_modules(
-    root_module: Any,
-    block_attr_names: Optional[Sequence[str]] = None,
-) -> List[Tuple[str, Any]]:
-    """Discover ordered repeating transformer/encoder/UNet block modules inside a PyTorch model."""
-    import torch.nn as nn
-
-    target_names = set(block_attr_names) if block_attr_names else KNOWN_BLOCK_CONTAINERS
-    discovered: List[Tuple[str, Any]] = []
-    claimed_prefixes: List[str] = []
-
-    def _is_nested(mod_name: str) -> bool:
-        return any(mod_name == p or mod_name.startswith(f"{p}.") for p in claimed_prefixes)
-
-    for name, mod in root_module.named_modules():
-        if not name or _is_nested(name):
-            continue
-        leaf_name = name.split(".")[-1]
-        if isinstance(mod, nn.ModuleList) and leaf_name in target_names and len(mod) > 0:
-            claimed_prefixes.append(name)
-            for idx, child in enumerate(mod):
-                discovered.append((f"{name}.{idx}", child))
-
-    if discovered:
-        return discovered
-
-    for name, mod in root_module.named_modules():
-        if not name or _is_nested(name):
-            continue
-        if isinstance(mod, nn.ModuleList) and len(mod) >= 2 and len({type(c) for c in mod}) == 1:
-            claimed_prefixes.append(name)
-            for idx, child in enumerate(mod):
-                discovered.append((f"{name}.{idx}", child))
-
-    return discovered
 
 
 class TorchBlockStreamer:
@@ -150,6 +69,7 @@ class TorchBlockStreamer:
 
         self.blocks: List[Tuple[str, Any]] = []
         self.budget_plan: Optional[HybridBudgetPlan] = None
+        self._effective_tiers: List[BlockTier] = []
         self.bytes_streamed: int = 0
         self.blocks_executed: int = 0
 
@@ -158,60 +78,27 @@ class TorchBlockStreamer:
         self._cpu_shadow: Dict[int, List[Tuple[str, bool, Any]]] = {}
         self._prefetch_cache: Dict[int, Dict[str, Any]] = {}
         self._prefetch_stream: Optional[Any] = None
+        self._inflight_events: Deque[Any] = deque()
         self._mmap_map: Dict[int, List[Tuple[str, bool, MMapTensorLoader, str, Any]]] = {}
         self._attached = False
 
     @property
     def tier_summary(self) -> Dict[str, int]:
         """Return block residency distribution across GPU, CPU, and NVMe."""
-        if self.budget_plan is not None:
+        tiers = self._effective_tiers
+        if not tiers and self.budget_plan is not None:
             return self.budget_plan.summary()
-        if self.mode == BlockStreamMode.CPU_OFFLOAD:
-            return {BlockTier.GPU_RESIDENT.value: 0, BlockTier.CPU_PINNED.value: len(self.blocks), BlockTier.NVME_MMAP.value: 0}
-        if self.mode == BlockStreamMode.MMAP_STREAM:
-            return {BlockTier.GPU_RESIDENT.value: 0, BlockTier.CPU_PINNED.value: 0, BlockTier.NVME_MMAP.value: len(self.blocks)}
-        return {BlockTier.GPU_RESIDENT.value: len(self.blocks), BlockTier.CPU_PINNED.value: 0, BlockTier.NVME_MMAP.value: 0}
-
-    def _build_safetensors_index(self) -> Dict[str, Tuple[MMapTensorLoader, str]]:
-        if not self.safetensors_paths:
-            raise ValueError("Safetensors file paths are required for MMAP_STREAM tier.")
-        index: Dict[str, Tuple[MMapTensorLoader, str]] = {}
-        for path in self.safetensors_paths:
-            loader = MMapTensorLoader(path)
-            self._loaders.append(loader)
-            for raw_key in loader.get_tensor_names():
-                index[raw_key] = (loader, raw_key)
-                for prefix in STRIP_MODEL_PREFIXES:
-                    if raw_key.startswith(prefix):
-                        index.setdefault(raw_key[len(prefix) :], (loader, raw_key))
-        return index
-
-    @staticmethod
-    def _lookup_key(
-        st_index: Dict[str, Tuple[MMapTensorLoader, str]],
-        candidate: str,
-    ) -> Optional[Tuple[MMapTensorLoader, str]]:
-        if candidate in st_index:
-            return st_index[candidate]
-        for prefix in STRIP_MODEL_PREFIXES:
-            if candidate.startswith(prefix) and candidate[len(prefix) :] in st_index:
-                return st_index[candidate[len(prefix) :]]
-        return None
-
-    @staticmethod
-    def _iter_module_tensors(mod: Any) -> List[Tuple[str, bool, Any]]:
-        non_persistent: Set[str] = set()
-        for sub_prefix, sub_mod in mod.named_modules():
-            for buf_name in getattr(sub_mod, "_non_persistent_buffers_set", set()):
-                non_persistent.add(f"{sub_prefix}.{buf_name}" if sub_prefix else buf_name)
-
-        items: List[Tuple[str, bool, Any]] = [
-            (p_name, True, p) for p_name, p in mod.named_parameters(recurse=True)
-        ]
-        for b_name, buf in mod.named_buffers(recurse=True):
-            if b_name not in non_persistent and buf is not None:
-                items.append((b_name, False, buf))
-        return items
+        if not tiers:
+            if self.mode == BlockStreamMode.CPU_OFFLOAD:
+                return {BlockTier.GPU_RESIDENT.value: 0, BlockTier.CPU_PINNED.value: len(self.blocks), BlockTier.NVME_MMAP.value: 0}
+            if self.mode == BlockStreamMode.MMAP_STREAM:
+                return {BlockTier.GPU_RESIDENT.value: 0, BlockTier.CPU_PINNED.value: 0, BlockTier.NVME_MMAP.value: len(self.blocks)}
+            return {BlockTier.GPU_RESIDENT.value: len(self.blocks), BlockTier.CPU_PINNED.value: 0, BlockTier.NVME_MMAP.value: 0}
+        return {
+            BlockTier.GPU_RESIDENT.value: sum(1 for t in tiers if t == BlockTier.GPU_RESIDENT),
+            BlockTier.CPU_PINNED.value: sum(1 for t in tiers if t == BlockTier.CPU_PINNED),
+            BlockTier.NVME_MMAP.value: sum(1 for t in tiers if t == BlockTier.NVME_MMAP),
+        }
 
     def _resolve_active_device(self, inputs: Any, kwargs: Optional[Dict[str, Any]] = None) -> Any:
         import torch
@@ -242,8 +129,13 @@ class TorchBlockStreamer:
         block_prefixes = tuple(f"{pfx}." for pfx, _ in self.blocks)
 
         try:
-            st_index = self._build_safetensors_index() if self.safetensors_paths else {}
+            if self.safetensors_paths:
+                self._loaders, st_index = build_safetensors_index(self.safetensors_paths)
+            else:
+                st_index = {}
+
             self._place_non_block_stem_and_head(block_prefixes, st_index)
+            move_non_persistent_buffers(self.model, self.compute_device)
 
             if self.mode == BlockStreamMode.CPU_OFFLOAD:
                 tiers = [BlockTier.CPU_PINNED] * len(self.blocks)
@@ -261,7 +153,7 @@ class TorchBlockStreamer:
                     has_mmap_backing=bool(st_index),
                     activation_reserve_mb=self.activation_reserve_mb,
                 )
-                tiers = self.budget_plan.tiers
+                tiers = list(self.budget_plan.tiers)
 
             self._configure_block_tiers(tiers, st_index)
         except Exception:
@@ -280,11 +172,11 @@ class TorchBlockStreamer:
         st_index: Dict[str, Tuple[MMapTensorLoader, str]],
     ) -> int:
         total = 0
-        for rel_name, _, tensor_obj in self._iter_module_tensors(blk):
-            if tensor_obj.numel() > 0:
+        for rel_name, _, tensor_obj in iter_persistent_module_tensors(blk):
+            if tensor_obj.numel() > 0 and not getattr(tensor_obj, "is_meta", False):
                 total += int(tensor_obj.numel() * tensor_obj.element_size())
             else:
-                resolved = self._lookup_key(st_index, f"{blk_prefix}.{rel_name}")
+                resolved = lookup_safetensors_key(st_index, f"{blk_prefix}.{rel_name}")
                 if resolved is not None:
                     loader, real_key = resolved
                     total += loader.get_tensor_byte_size(real_key)
@@ -295,18 +187,36 @@ class TorchBlockStreamer:
         block_prefixes: Tuple[str, ...],
         st_index: Dict[str, Tuple[MMapTensorLoader, str]],
     ) -> None:
-        for full_name, is_param, tensor_obj in self._iter_module_tensors(self.model):
+        for full_name, is_param, tensor_obj in iter_persistent_module_tensors(self.model):
             if full_name.startswith(block_prefixes):
                 continue
             if getattr(tensor_obj, "is_meta", False) or tensor_obj.numel() == 0:
-                resolved = self._lookup_key(st_index, full_name)
+                resolved = lookup_safetensors_key(st_index, full_name)
                 if resolved is None:
                     raise KeyError(f"Missing non-block tensor '{full_name}' in safetensors index.")
                 loader, real_key = resolved
                 loaded = loader.read_torch_tensor(real_key, device=str(self.compute_device), target_dtype=tensor_obj.dtype)
-                _assign_tensor(self.model, full_name, loaded, is_param)
+                assign_tensor(self.model, full_name, loaded, is_param)
             elif tensor_obj.device != self.compute_device:
-                _assign_tensor(self.model, full_name, tensor_obj.data.to(self.compute_device), is_param)
+                assign_tensor(self.model, full_name, tensor_obj.data.to(self.compute_device), is_param)
+
+    def _can_mmap_block(
+        self,
+        blk_prefix: str,
+        blk: Any,
+        st_index: Dict[str, Tuple[MMapTensorLoader, str]],
+    ) -> bool:
+        if not st_index:
+            return False
+        for rel_name, _, tensor_obj in iter_persistent_module_tensors(blk):
+            resolved = lookup_safetensors_key(st_index, f"{blk_prefix}.{rel_name}")
+            if resolved is None:
+                return False
+            loader, real_key = resolved
+            if not getattr(tensor_obj, "is_meta", False) and tensor_obj.numel() > 0:
+                if tuple(loader.get_tensor_metadata(real_key)["shape"]) != tuple(tensor_obj.shape):
+                    return False
+        return True
 
     def _configure_block_tiers(
         self,
@@ -315,36 +225,45 @@ class TorchBlockStreamer:
     ) -> None:
         import torch
 
-        has_cpu_tier = any(t == BlockTier.CPU_PINNED for t in tiers)
+        effective: List[BlockTier] = []
+        for (blk_prefix, blk), tier in zip(self.blocks, tiers):
+            if tier == BlockTier.NVME_MMAP and self.mode == BlockStreamMode.HYBRID_BUDGET:
+                if not self._can_mmap_block(blk_prefix, blk, st_index):
+                    effective.append(BlockTier.CPU_PINNED)
+                    continue
+            effective.append(tier)
+        self._effective_tiers = effective
+
+        has_cpu_tier = any(t == BlockTier.CPU_PINNED for t in effective)
         use_pin = has_cpu_tier and self.pin_memory and self.compute_device.type == "cuda" and torch.cuda.is_available()
         if has_cpu_tier and self.prefetch and self.compute_device.type == "cuda" and torch.cuda.is_available():
             self._prefetch_stream = torch.cuda.Stream(device=self.compute_device)
 
-        cpu_tier_indices = [i for i, t in enumerate(tiers) if t == BlockTier.CPU_PINNED]
+        cpu_tier_indices = [i for i, t in enumerate(effective) if t == BlockTier.CPU_PINNED]
         next_cpu_peer: Dict[int, Optional[int]] = {
             cpu_tier_indices[pos]: (cpu_tier_indices[pos + 1] if pos + 1 < len(cpu_tier_indices) else None)
             for pos in range(len(cpu_tier_indices))
         }
 
-        for idx, ((blk_prefix, blk), tier) in enumerate(zip(self.blocks, tiers)):
+        for idx, ((blk_prefix, blk), tier) in enumerate(zip(self.blocks, effective)):
             if tier == BlockTier.GPU_RESIDENT:
-                for rel_name, is_param, tensor_obj in self._iter_module_tensors(blk):
+                for rel_name, is_param, tensor_obj in iter_persistent_module_tensors(blk):
                     if getattr(tensor_obj, "is_meta", False) or tensor_obj.numel() == 0:
-                        resolved = self._lookup_key(st_index, f"{blk_prefix}.{rel_name}")
+                        resolved = lookup_safetensors_key(st_index, f"{blk_prefix}.{rel_name}")
                         if resolved is None:
                             raise KeyError(f"Missing GPU-resident tensor '{blk_prefix}.{rel_name}'.")
                         loader, real_key = resolved
                         dev_t = loader.read_torch_tensor(real_key, device=str(self.compute_device), target_dtype=tensor_obj.dtype)
-                        _assign_tensor(blk, rel_name, dev_t, is_param)
+                        assign_tensor(blk, rel_name, dev_t, is_param)
                     elif tensor_obj.device != self.compute_device:
-                        _assign_tensor(blk, rel_name, tensor_obj.data.to(self.compute_device), is_param)
+                        assign_tensor(blk, rel_name, tensor_obj.data.to(self.compute_device), is_param)
                 self._hooks.append(blk.register_forward_hook(self._make_gpu_resident_hook()))
 
             elif tier == BlockTier.CPU_PINNED:
                 shadow: List[Tuple[str, bool, Any]] = []
-                for rel_name, is_param, tensor_obj in self._iter_module_tensors(blk):
+                for rel_name, is_param, tensor_obj in iter_persistent_module_tensors(blk):
                     if getattr(tensor_obj, "is_meta", False) or tensor_obj.numel() == 0:
-                        resolved = self._lookup_key(st_index, f"{blk_prefix}.{rel_name}")
+                        resolved = lookup_safetensors_key(st_index, f"{blk_prefix}.{rel_name}")
                         if resolved is None:
                             raise KeyError(f"Missing CPU-pinned tensor '{blk_prefix}.{rel_name}'.")
                         loader, real_key = resolved
@@ -354,15 +273,15 @@ class TorchBlockStreamer:
                     if use_pin and not cpu_t.is_pinned():
                         cpu_t = cpu_t.pin_memory()
                     shadow.append((rel_name, is_param, cpu_t))
-                    _assign_tensor(blk, rel_name, cpu_t, is_param)
+                    assign_tensor(blk, rel_name, cpu_t, is_param)
                 self._cpu_shadow[idx] = shadow
                 self._register_cpu_hooks(idx, blk, next_cpu_peer.get(idx))
 
             else:
                 blk_entries: List[Tuple[str, bool, MMapTensorLoader, str, Any]] = []
-                for rel_name, is_param, tensor_obj in self._iter_module_tensors(blk):
+                for rel_name, is_param, tensor_obj in iter_persistent_module_tensors(blk):
                     candidate = f"{blk_prefix}.{rel_name}"
-                    resolved = self._lookup_key(st_index, candidate)
+                    resolved = lookup_safetensors_key(st_index, candidate)
                     if resolved is None:
                         raise KeyError(
                             f"Missing tensor '{candidate}' in safetensors files {[p.name for p in self.safetensors_paths]}."
@@ -370,7 +289,7 @@ class TorchBlockStreamer:
                     loader, real_key = resolved
                     orig_dtype = tensor_obj.dtype
                     blk_entries.append((rel_name, is_param, loader, real_key, orig_dtype))
-                    _assign_tensor(blk, rel_name, torch.empty(0, dtype=orig_dtype, device="cpu"), is_param)
+                    assign_tensor(blk, rel_name, torch.empty(0, dtype=orig_dtype, device="cpu"), is_param)
                 self._mmap_map[idx] = blk_entries
                 self._register_mmap_hooks(idx, blk)
 
@@ -396,9 +315,19 @@ class TorchBlockStreamer:
 
         def _pre_hook(module: Any, inputs: Any, kwargs: Optional[Dict[str, Any]] = None) -> None:
             target_dev = self._resolve_active_device(inputs, kwargs)
+            if self._auto_device:
+                move_non_persistent_buffers(module, target_dev)
+
+            if self._prefetch_stream is not None and target_dev == self.compute_device:
+                while len(self._inflight_events) >= 2:
+                    self._inflight_events.popleft().synchronize()
+
             if self._prefetch_stream is not None and target_dev == self.compute_device and idx in self._prefetch_cache:
-                torch.cuda.current_stream(self.compute_device).wait_stream(self._prefetch_stream)
+                compute_stream = torch.cuda.current_stream(self.compute_device)
+                compute_stream.wait_stream(self._prefetch_stream)
                 dev_map = self._prefetch_cache.pop(idx)
+                for dev_t in dev_map.values():
+                    dev_t.record_stream(compute_stream)
             else:
                 dev_map = {
                     rel_name: cpu_t.to(target_dev, non_blocking=(target_dev.type == "cuda"))
@@ -407,7 +336,7 @@ class TorchBlockStreamer:
 
             for rel_name, is_param, _ in self._cpu_shadow[idx]:
                 dev_t = dev_map[rel_name]
-                _assign_tensor(module, rel_name, dev_t, is_param)
+                assign_tensor(module, rel_name, dev_t, is_param)
                 self.bytes_streamed += dev_t.numel() * dev_t.element_size()
 
             if self._prefetch_stream is not None and target_dev == self.compute_device:
@@ -415,7 +344,11 @@ class TorchBlockStreamer:
 
         def _post_hook(module: Any, _inputs: Any, _output: Any) -> None:
             for rel_name, is_param, cpu_t in self._cpu_shadow[idx]:
-                _assign_tensor(module, rel_name, cpu_t, is_param)
+                assign_tensor(module, rel_name, cpu_t, is_param)
+            if self._prefetch_stream is not None and self.compute_device.type == "cuda":
+                ev = torch.cuda.Event()
+                ev.record(torch.cuda.current_stream(self.compute_device))
+                self._inflight_events.append(ev)
             self.blocks_executed += 1
 
         try:
@@ -429,14 +362,16 @@ class TorchBlockStreamer:
 
         def _pre_hook(module: Any, inputs: Any, kwargs: Optional[Dict[str, Any]] = None) -> None:
             target_dev = self._resolve_active_device(inputs, kwargs)
+            if self._auto_device:
+                move_non_persistent_buffers(module, target_dev)
             for rel_name, is_param, loader, real_key, orig_dtype in self._mmap_map[idx]:
                 loaded = loader.read_torch_tensor(real_key, device=str(target_dev), target_dtype=orig_dtype)
-                _assign_tensor(module, rel_name, loaded, is_param)
+                assign_tensor(module, rel_name, loaded, is_param)
                 self.bytes_streamed += loader.get_tensor_byte_size(real_key)
 
         def _post_hook(module: Any, _inputs: Any, _output: Any) -> None:
             for rel_name, is_param, _, _, orig_dtype in self._mmap_map[idx]:
-                _assign_tensor(module, rel_name, torch.empty(0, dtype=orig_dtype, device="cpu"), is_param)
+                assign_tensor(module, rel_name, torch.empty(0, dtype=orig_dtype, device="cpu"), is_param)
             self.blocks_executed += 1
 
         try:
@@ -451,14 +386,16 @@ class TorchBlockStreamer:
             h.remove()
         self._hooks.clear()
         self._prefetch_cache.clear()
+        self._inflight_events.clear()
 
         if restore_cpu_weights and self._cpu_shadow:
             for idx, (_, blk) in enumerate(self.blocks):
                 for rel_name, is_param, cpu_t in self._cpu_shadow.get(idx, []):
-                    _assign_tensor(blk, rel_name, cpu_t, is_param)
+                    assign_tensor(blk, rel_name, cpu_t, is_param)
 
         self._cpu_shadow.clear()
         self._mmap_map.clear()
+        self._effective_tiers.clear()
         for loader in self._loaders:
             loader.close()
         self._loaders.clear()
@@ -469,3 +406,12 @@ class TorchBlockStreamer:
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self.detach()
+
+
+__all__ = [
+    "BlockStreamMode",
+    "KNOWN_BLOCK_CONTAINERS",
+    "STRIP_MODEL_PREFIXES",
+    "TorchBlockStreamer",
+    "discover_block_modules",
+]
