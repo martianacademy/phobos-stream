@@ -1,11 +1,12 @@
-# <img src="assets/icon.png" width="42" align="top" alt="PhobosStream Icon" /> PhobosStream
+# <img src="https://raw.githubusercontent.com/martianacademy/phobos-stream/main/assets/icon.png" width="42" align="top" alt="PhobosStream Icon" /> PhobosStream
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![PyPI Version](https://img.shields.io/pypi/v/phobos-stream?color=EE6A3E&label=PyPI)](https://pypi.org/project/phobos-stream/)
+[![Comfy Registry](https://img.shields.io/badge/Comfy_Registry-v0.2.3-EE6A3E)](https://registry.comfy.org/publishers/martianacademy/nodes/comfyui-phobosstream)
+[![CI Tests](https://github.com/martianacademy/phobos-stream/actions/workflows/ci.yml/badge.svg)](https://github.com/martianacademy/phobos-stream/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://www.python.org/)
-[![Backends](https://img.shields.io/badge/Backends-MLX%20•%20CUDA%20•%20MPS%20•%20ROCm%20•%20GGUF-purple.svg)]()
-[![Tests Passing](https://img.shields.io/badge/Tests-27%20Passing-success.svg)]()
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/martianacademy/phobos-stream/blob/main/LICENSE)
 
-**PhobosStream** is a universal zero-VRAM diffusion streaming engine designed to run massive **12B–20B+ Video and Image Diffusion Transformers (DiTs)** — including **Alibaba Wan2.1 (14B)**, **Black Forest Labs FLUX.1 (12B)**, **Lumina2 / Z-Image-Turbo**, and **Tencent HunyuanVideo (13B)** — on consumer hardware without Out-Of-Memory (OOM) crashes.
+**PhobosStream** is a universal zero-VRAM diffusion streaming engine built to run massive **12B–20B+ Video and Image Diffusion Transformers (DiTs)** — including **Alibaba Wan2.1 (14B)**, **Black Forest Labs FLUX.1 (12B)**, **Lumina2 / Z-Image-Turbo**, and **Tencent HunyuanVideo (13B)** — on consumer hardware without Out-Of-Memory (OOM) crashes.
 
 By combining **3-Stage Sequential Offloading** (`Text Encoder -> DiT -> Tiled VAE`) with **Hook-Based Zero-Copy `mmap` Block-by-Block Streaming** (`TorchBlockStreamer` & `MLXBlockStreamer`), PhobosStream cuts Peak GPU Memory on a real **19.5 GB BF16 pipeline from 26.45 GB down to 1.25–1.60 GB (93.9%–95.3% VRAM reduction)** with **zero quantization quality loss**.
 
@@ -58,24 +59,24 @@ flowchart TD
 
 ## ⚡ Quick Start
 
-### 1. Installation
+### 1. Install from PyPI
 
+```bash
+pip install phobos-stream
+# With PyTorch CUDA/MPS or GGUF extras:
+pip install "phobos-stream[cuda,gguf]"
+```
+
+Or install from source for development:
 ```bash
 git clone https://github.com/martianacademy/phobos-stream.git
 cd phobos-stream
-
-uv venv --python 3.12
-source .venv/bin/activate
+uv venv --python 3.12 && source .venv/bin/activate
 uv pip install -e ".[dev]"
-```
-
-### 2. Run Test Suite (27 Unit & Integration Tests)
-
-```bash
 pytest -v
 ```
 
-### 3. Python API: Hook Any Real PyTorch DiT in 4 Lines
+### 2. Python API: Stream Any Real PyTorch DiT in 4 Lines
 
 ```python
 import torch
@@ -93,17 +94,25 @@ with TorchBlockStreamer(
     output = model(latents, timestep, context)
 ```
 
-### 4. Launch OpenAI / Sora-Compatible REST & WebSocket API
+### 3. CLI & OpenAI / Sora-Compatible API Gateway
 
 ```bash
-phobos-stream serve --port 8088 --manifest-path shards/manifest.json --backend auto
+# Index a .safetensors checkpoint directory into a zero-copy virtual manifest:
+phobos-stream shard --model-dir /path/to/models --architecture wan2.1
+
+# Launch REST & WebSocket API server (/v1/images/generations, /v1/videos/generations):
+phobos-stream serve --port 8088 --manifest-path /path/to/models/shards/manifest.json --backend auto
 ```
 
 ---
 
 ## 🎨 ComfyUI Custom Node Extension (`ComfyUI-PhobosStream`)
 
-**ComfyUI-PhobosStream** is registered in **ComfyUI-Manager** ([standalone repository](https://github.com/martianacademy/ComfyUI-PhobosStream)) and works out-of-the-box with zero unpublished dependencies:
+Published on both the [**Official Comfy Registry**](https://registry.comfy.org/publishers/martianacademy/nodes/comfyui-phobosstream) and **ComfyUI-Manager** ([repository](https://github.com/martianacademy/ComfyUI-PhobosStream)):
+
+```bash
+comfy node install comfyui-phobosstream
+```
 
 * **`🚀 Phobos Zero-VRAM 2K/4K & Video Pipeline`**: 3-stage sequential offloader supporting single & `DualCLIPLoader`, dynamic 4-ch/16-ch 4D image and 5D video latents (`Wan2.1`, `HunyuanVideo`, `FLUX`, `Lumina2`, `SDXL`), `VAEDecodeTiled`, and per-block streaming.
 * **`🔌 PhobosStream Block-Streamer (Any MODEL)`**: Drop-in `MODEL -> MODEL` hook patcher (`cpu_offload` / `mmap_stream`) compatible with standard ComfyUI workflows (LoRAs, ControlNet, WanVideo, FLUX).
@@ -113,4 +122,4 @@ phobos-stream serve --port 8088 --manifest-path shards/manifest.json --backend a
 
 ## 📜 License
 
-MIT License — free for commercial and personal use.
+[MIT License](https://github.com/martianacademy/phobos-stream/blob/main/LICENSE) — free for commercial and personal use.

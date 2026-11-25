@@ -1,136 +1,79 @@
-# Project Handoff & Architecture Guide 🌌
+# <img src="https://raw.githubusercontent.com/martianacademy/phobos-stream/main/assets/icon.png" width="38" align="top" alt="PhobosStream Icon" /> Project Handoff & Architecture Guide
 
-**Project:** `PhobosStream`  
+**Project:** `PhobosStream` (`v0.2.1`)  
 **GitHub Repository:** [https://github.com/martianacademy/phobos-stream](https://github.com/martianacademy/phobos-stream)  
-**Target Hardware:** Universal (Apple Silicon M1/M2/M3/M4 via MLX, NVIDIA GeForce RTX via CUDA, AMD ROCm, and GGUF/CPU)  
-**Target Models:** Alibaba Wan2.1 (14B), Black Forest Labs FLUX.1 (12B), Tencent HunyuanVideo (13B), THUDM CogVideoX  
-**License:** MIT (100% Free & Open-Source)
+**PyPI Package:** [https://pypi.org/project/phobos-stream/](https://pypi.org/project/phobos-stream/)  
+**Comfy Registry:** [https://registry.comfy.org/publishers/martianacademy/nodes/comfyui-phobosstream](https://registry.comfy.org/publishers/martianacademy/nodes/comfyui-phobosstream)  
+**ComfyUI Extension Repo:** [https://github.com/martianacademy/ComfyUI-PhobosStream](https://github.com/martianacademy/ComfyUI-PhobosStream)  
+**License:** MIT
 
 ---
 
 ## 🎯 Executive Summary
 
-`PhobosStream` is a universal zero-VRAM diffusion streaming engine created to run massive **12B–20B+ Video and Image Diffusion Transformers (DiTs)** on consumer hardware that would otherwise experience Out-Of-Memory (OOM) crashes.
+`PhobosStream` is a universal zero-VRAM diffusion streaming engine designed to run **12B–20B+ Video and Image Diffusion Transformers (DiTs)** on consumer Apple Silicon Macs and 8GB/12GB NVIDIA/AMD GPUs without Out-Of-Memory (OOM) crashes.
 
-By executing **3-Stage Sequential Offloading** (Text Encoder -> DiT Blocks -> VAE) combined with **Zero-Copy `mmap` Block-by-Block Streaming**, PhobosStream reduces peak VRAM requirements from **>28 GB down to <800 MB** (>97% memory reduction), enabling professional video generation on 16GB/24GB Apple Silicon Macs and 8GB/12GB RTX GPUs.
+By combining **3-Stage Sequential Offloading** (`Text Encoder -> DiT -> Tiled/Strip VAE`) with **Hook-Based Per-Block Zero-Copy `mmap` Streaming** (`TorchBlockStreamer` & `MLXBlockStreamer`), PhobosStream reduces Peak Metal GPU memory on a real **19.5 GB BF16 pipeline (`Qwen 3.4B` + `Z-Image-Turbo` + `VAE`) from 26.45 GB down to 1.25–1.60 GB (93.9%–95.3% reduction)** while preserving **bit-exact BF16 output**.
 
 ---
 
 ## 🏗️ Codebase Directory Structure
 
-```
+```text
 phobos-stream/
-├── pyproject.toml              # Build configuration, dependencies, and CLI entrypoints
-├── README.md                   # Complete architectural guide, benchmarks, and API reference
-├── HANDOFF.md                  # Developer handoff documentation (this file)
+├── pyproject.toml                       # Build config, PyPI metadata, and CLI entrypoint
+├── README.md                            # Main user & developer documentation
+├── HANDOFF.md                           # Architecture & release handoff guide
+├── assets/icon.png                      # Martian brand mark (#181110, #EE6A3E, #FFF7F0)
+├── ComfyUI-PhobosStream/                # Self-contained ComfyUI custom node repository
 ├── src/phobos_stream/
-│   ├── types.py                # GenerationConfig, ModelArchitecture, BackendType schemas
-│   ├── cli.py                  # CLI commands (`serve`, `generate`, `benchmark`)
-│   ├── backends/
-│   │   ├── base.py             # BaseBackend abstract interface
-│   │   ├── mlx_backend.py      # Apple Silicon Metal hardware-accelerated backend
-│   │   ├── cuda_backend.py     # NVIDIA CUDA & AMD ROCm PyTorch backend
-│   │   ├── gguf_backend.py     # GGUF quantized tensor & CPU fallback backend
-│   │   └── factory.py          # Auto-detection backend factory
+│   ├── types.py                         # GenerationConfig, BackendType, PipelineMetrics
+│   ├── cli.py                           # CLI (`serve`, `generate`, `shard`, `benchmark`)
 │   ├── storage/
-│   │   ├── layout.py           # Shard manifests and block metadata dataclasses
-│   │   ├── mmap_loader.py      # Zero-copy memory-mapped safetensors tensor reader
-│   │   └── sharder.py          # Partitioning & virtual byte-range index builder
-│   ├── models/
-│   │   ├── attention.py        # Universal Self-Attention and Cross-Attention
-│   │   ├── rotary.py           # 3D Spatio-Temporal Rotary Position Embedding (3D RoPE)
-│   │   └── dit_block.py        # Universal DiT Block (adaLN, SwiGLU / MLP, Residuals)
-│   ├── adapters/
-│   │   ├── base.py             # BaseModelAdapter abstract interface
-│   │   ├── wan_adapter.py      # Alibaba Wan2.1 14B / 1.3B Video DiT adapter
-│   │   ├── flux_adapter.py     # Black Forest Labs FLUX.1 12B image adapter
-│   │   ├── hunyuan_adapter.py  # Tencent HunyuanVideo 13B adapter
-│   │   └── factory.py          # Model architecture auto-resolution
+│   │   ├── layout.py                    # ModelShardsManifest & BlockMetadata
+│   │   ├── mmap_loader.py               # Zero-copy safetensors mmap (NumPy, PyTorch BF16, MLX BF16)
+│   │   └── sharder.py                   # Virtual indexer & physical block partitioner
+│   ├── streaming/
+│   │   ├── torch_block_streamer.py      # Hook-based PyTorch CPU-offload & meta-device mmap streamer
+│   │   └── mlx_block_streamer.py        # Per-block MLX mmap streamer with mx.eval boundaries
 │   ├── pipeline/
-│   │   ├── scheduler.py        # Flow Matching / Rectified Flow Euler ODE scheduler
-│   │   ├── offloader.py        # 3-Stage Sequential Offloader (T5 -> DiT -> VAE)
-│   │   └── stream_engine.py    # Denoising orchestrator and telemetry tracker
-│   └── server/
-│       ├── schemas.py          # OpenAI / Sora compatible Pydantic schemas
-│       ├── ws_progress.py      # WebSocket real-time progress broadcaster
-│       └── app.py              # FastAPI server (/v1/videos/generations, /v1/images/generations)
-├── tests/                      # 15 Comprehensive Unit Tests (100% Passing)
-└── examples/
-    ├── benchmark_streaming.py  # Live 14B video generation benchmark on Metal GPU
-    └── test_live_server.py     # End-to-end integration test validating REST endpoints
+│   │   ├── stage_runner.py              # StageSequentialRunner & feather-blended tiled_spatial_decode
+│   │   ├── scheduler.py                 # Flow Matching Euler ODE scheduler
+│   │   ├── offloader.py                 # Shard streaming coordinator
+│   │   └── stream_engine.py             # Batched single-pass CFG denoising engine
+│   ├── pipelines/
+│   │   ├── mlx_zimage.py                # End-to-end Apple Metal MLX Z-Image-Turbo pipeline
+│   │   ├── mlx_zimage_blocks.py         # Fused QKV/W13 kernels & per-block mmap streaming
+│   │   └── mlx_zimage_vae.py            # Low-memory MLX Strip-VAE weight mapper
+│   ├── media/
+│   │   └── video_writer.py              # PNG & H.264/MPEG-4 MP4 video encoder
+│   ├── integrations/comfyui/
+│   │   ├── comfy_runtime.py             # 3-stage offload, 4D/5D latents, DualCLIP, Tiled VAE
+│   │   └── nodes.py                     # 5 registered ComfyUI custom nodes
+│   ├── backends/                        # MLX, CUDA/ROCm, and GGUF/CPU compute backends
+│   ├── models/                          # Standalone attention, 3D-RoPE, and DiT block primitives
+│   ├── adapters/                        # Wan2.1, FLUX, HunyuanVideo, CogVideoX weight mappers
+│   └── server/                          # FastAPI HTTP + WebSocket OpenAI/Sora-compatible gateway
+├── scripts/
+│   └── benchmark_real_phobos_optimization.py # Isolated 4-mode empirical benchmark on 19.5 GB suite
+└── tests/                               # 27 passing unit & integration tests (<3s runtime)
 ```
 
 ---
 
-## 📊 Verified Test Results (Apple Silicon Metal GPU)
+## 📊 Verified Empirical Results (`1024×1024`, 8 Steps, Real 19.5 GB Suite)
 
-### 1. Benchmark Telemetry (`examples/benchmark_streaming.py`)
-Tested with 16 simulated DiT blocks (2048 hidden dimension, 720p 25-frame video latents):
-
-| Metric | Monolithic Baseline | PhobosStream (MLX Metal) | Impact |
-| :--- | :--- | :--- | :--- |
-| **Peak VRAM / Unified RAM**| **28.4 GB (OOM Crash)**| **788.11 MB** | **>97% RAM Reduction!** |
-| **Stage 1 (Text Encoding)** | 11.2 GB persistent | **0.73 ms** (Instantly freed) | Memory reused for DiT |
-| **Stage 2 (DiT Denoising)** | Crashes on 16GB/24GB | **11.19 s / step** | Runs entirely in-budget |
-| **Stage 3 (VAE Decode)** | OOM with DiT loaded | **57.53 ms** | Reconstructed to RGB |
-| **Crash Rate** | 100% OOM on 16GB Mac | **0% (Rock Solid)** | Zero-VRAM guarantee |
-
-### 2. Live HTTP & WebSocket API Validation (`examples/test_live_server.py`)
-- `GET /health`: Returned `200 OK` (backend: `mlx`, architecture: `wan2.1`).
-- `GET /v1/models`: Listed `wan2.1`, `flux-schnell`, `hunyuan-video`.
-- `POST /v1/images/generations`: Completed photorealistic image request in `0.04s`.
-- `POST /v1/videos/generations`: Completed video request in `0.08s` with `16.61 MB` peak RAM.
+| Mode | Peak Metal GPU | VRAM Saved | Active Resident | Wall Time | Fidelity |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `monolithic` | `26,445.0 MB` | `0.0%` | `19,637.5 MB` | `41.97 s` | Reference |
+| `stage_offload` | `12,906.4 MB` | `51.2%` | `11,742.5 MB` | `46.99 s` | `32.68 dB` PSNR (Strip-VAE) |
+| `q4_stage_offload` | `4,814.7 MB` | `81.8%` | `3,310.4 MB` | `69.72 s` | `19.25 dB` PSNR (4-bit) |
+| `block_stream` | `1,601.0 MB` (`1,248.2 MB` DiT) | `93.9%` (`95.3%` DiT) | `23.2 MB` | `75.04 s` | Bit-exact BF16 (`0.0 px` diff vs `stage_offload`) |
 
 ---
 
-## ⚡ Quick Operational Commands
+## 🚀 Release & CI Automation
 
-### 1. Activate Environment
-```bash
-cd ~/Documents/phobos-stream
-source .venv/bin/activate
-```
-
-### 2. Run Test Suite
-```bash
-pytest -v
-```
-
-### 3. Run Benchmark
-```bash
-python examples/benchmark_streaming.py
-```
-
-### 4. Start the OpenAI / Sora-Compatible API Gateway
-```bash
-phobos-stream serve --port 8088 --backend auto
-```
-
-### 5. Test Live Server Integration
-```bash
-python examples/test_live_server.py
-```
-
-### 6. ComfyUI Integration Status
-- **Dedicated Repo:** [https://github.com/martianacademy/ComfyUI-PhobosStream](https://github.com/martianacademy/ComfyUI-PhobosStream)
-- **Official ComfyUI Registry PR:** [Comfy-Org/ComfyUI-Manager #3453](https://github.com/Comfy-Org/ComfyUI-Manager/pull/3453)
-- **Local Adapter Location:** `~/Documents/phobos-stream/ComfyUI-PhobosStream`
-- **Installed Symlink:** `~/ComfyUI/custom_nodes/ComfyUI-PhobosStream` (or installed standalone via ComfyUI-Manager)
-- **Nodes Registered (`PhobosStream` Category):**
-  - `PhobosStageOffloadPipeline`: `🚀 Phobos Zero-VRAM 2K/4K & Video Pipeline`
-  - `PhobosBlockStreamPatcher`: `🔌 PhobosStream Block-Streamer (Any MODEL)`
-  - `PhobosStreamLoader`: `🌌 PhobosStream Model Loader (Zero-VRAM)`
-  - `PhobosStreamSampler`: `⚡ PhobosStream Diffusion Sampler (Stage-Offload)`
-  - `PhobosStreamVAEDecode`: `🎞️ PhobosStream Tiled VAE Decoder`
-- **Output Compatibility:** Emits standard `(Batch, H, W, 3)` `IMAGE` tensors compatible with standard ComfyUI `SaveImage` and `Video Combine` nodes.
-
----
-
-## 🧭 Future Roadmap
-
-1. **Metal I/O DMA Acceleration:**  
-   Direct SSD to GPU buffer transfer via `MTLIOCommandQueue` to bypass kernel page faults for an additional 1.5x–2x streaming boost.
-2. **FlashAttention-3 / SageAttention Kernel:**  
-   Quantized FP8 attention for spatio-temporal video latents to double denoising frame rates.
-3. **Multi-GPU / Hybrid Distributed Offload:**  
-   Streaming DiT blocks across hybrid setups (e.g. Mac Metal primary + remote RTX secondary).
+- **GitHub CI (`.github/workflows/ci.yml`):** Runs all 27 `pytest` checks on Ubuntu 24.04 on every push/PR.
+- **PyPI Auto-Publish (`.github/workflows/publish-pypi.yml`):** Publishes to `pypi.org/project/phobos-stream/` via GitHub OIDC Trusted Publisher on release or manual `workflow_dispatch` (bump `version` in `pyproject.toml` first).
+- **Comfy Registry Auto-Publish (`ComfyUI-PhobosStream/.github/workflows/publish.yml`):** Publishes to `registry.comfy.org` via `Comfy-Org/publish-node-action` whenever `ComfyUI-PhobosStream/pyproject.toml` version is bumped on `main`.
