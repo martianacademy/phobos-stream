@@ -1,6 +1,7 @@
 """Universal hook-based block streamer for PyTorch Diffusion Transformers, T5/CLIP, & UNets."""
 
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple, Union
@@ -17,6 +18,7 @@ from phobos_stream.streaming.block_discovery import (
     move_non_persistent_buffers,
 )
 from phobos_stream.streaming.budget_planner import BlockTier, HybridBudgetPlan, MemoryBudgetPlanner
+from phobos_stream.streaming.first_block_cache import FirstBlockResidualCache
 
 
 class BlockStreamMode(str, Enum):
@@ -43,6 +45,9 @@ class TorchBlockStreamer:
         vram_budget_mb: Optional[float] = None,
         ram_budget_mb: Optional[float] = None,
         activation_reserve_mb: int = 1536,
+        cache_rel_l1_thresh: float = 0.0,
+        cache_warmup_steps: int = 2,
+        cache_max_consecutive_skips: int = 3,
     ) -> None:
         import torch
 
@@ -66,6 +71,15 @@ class TorchBlockStreamer:
         self.vram_budget_mb = vram_budget_mb
         self.ram_budget_mb = ram_budget_mb
         self.activation_reserve_mb = activation_reserve_mb
+        self.residual_cache: Optional[FirstBlockResidualCache] = (
+            FirstBlockResidualCache(
+                rel_l1_thresh=cache_rel_l1_thresh,
+                warmup_steps=cache_warmup_steps,
+                max_consecutive_skips=cache_max_consecutive_skips,
+            )
+            if cache_rel_l1_thresh > 0.0
+            else None
+        )
 
         self.blocks: List[Tuple[str, Any]] = []
         self.budget_plan: Optional[HybridBudgetPlan] = None
@@ -156,6 +170,17 @@ class TorchBlockStreamer:
                 tiers = list(self.budget_plan.tiers)
 
             self._configure_block_tiers(tiers, st_index)
+            if self.residual_cache is not None and self.residual_cache.enabled:
+                first_post0_cpu = next(
+                    (i for i, t in enumerate(self._effective_tiers) if i >= 1 and t == BlockTier.CPU_PINNED),
+                    None,
+                )
+                miss_cb = (
+                    (lambda: self._prefetch_cpu_block(first_post0_cpu))
+                    if (first_post0_cpu is not None and self._prefetch_stream is not None)
+                    else None
+                )
+                self.residual_cache.attach(self.model, blocks=self.blocks, on_miss_callback=miss_cb)
         except Exception:
             for loader in self._loaders:
                 loader.close()
@@ -257,10 +282,10 @@ class TorchBlockStreamer:
                         assign_tensor(blk, rel_name, dev_t, is_param)
                     elif tensor_obj.device != self.compute_device:
                         assign_tensor(blk, rel_name, tensor_obj.data.to(self.compute_device), is_param)
-                self._hooks.append(blk.register_forward_hook(self._make_gpu_resident_hook()))
+                self._hooks.append(blk.register_forward_hook(self._make_gpu_resident_hook(idx)))
 
             elif tier == BlockTier.CPU_PINNED:
-                shadow: List[Tuple[str, bool, Any]] = []
+                raw_items: List[Tuple[str, bool, Any]] = []
                 for rel_name, is_param, tensor_obj in iter_persistent_module_tensors(blk):
                     if getattr(tensor_obj, "is_meta", False) or tensor_obj.numel() == 0:
                         resolved = lookup_safetensors_key(st_index, f"{blk_prefix}.{rel_name}")
@@ -270,9 +295,20 @@ class TorchBlockStreamer:
                         cpu_t = loader.read_torch_tensor(real_key, device="cpu", target_dtype=tensor_obj.dtype)
                     else:
                         cpu_t = tensor_obj.data.detach().to("cpu")
-                    if use_pin and not cpu_t.is_pinned():
-                        cpu_t = cpu_t.pin_memory()
-                    shadow.append((rel_name, is_param, cpu_t))
+                    raw_items.append((rel_name, is_param, cpu_t))
+
+                if use_pin and len(raw_items) > 1:
+                    with ThreadPoolExecutor(max_workers=4) as pool:
+                        pinned_tensors = list(
+                            pool.map(lambda t: t.pin_memory() if not t.is_pinned() else t, [it[2] for it in raw_items])
+                        )
+                    shadow = [(it[0], it[1], pt) for it, pt in zip(raw_items, pinned_tensors)]
+                else:
+                    shadow = [
+                        (rel_name, is_param, cpu_t.pin_memory() if (use_pin and not cpu_t.is_pinned()) else cpu_t)
+                        for rel_name, is_param, cpu_t in raw_items
+                    ]
+                for rel_name, is_param, cpu_t in shadow:
                     assign_tensor(blk, rel_name, cpu_t, is_param)
                 self._cpu_shadow[idx] = shadow
                 self._register_cpu_hooks(idx, blk, next_cpu_peer.get(idx))
@@ -293,8 +329,10 @@ class TorchBlockStreamer:
                 self._mmap_map[idx] = blk_entries
                 self._register_mmap_hooks(idx, blk)
 
-    def _make_gpu_resident_hook(self) -> Any:
+    def _make_gpu_resident_hook(self, idx: int = 0) -> Any:
         def _post(_mod: Any, _inp: Any, _out: Any) -> None:
+            if idx > 0 and self.residual_cache is not None and self.residual_cache.skip_active:
+                return
             self.blocks_executed += 1
 
         return _post
@@ -314,6 +352,8 @@ class TorchBlockStreamer:
         import torch
 
         def _pre_hook(module: Any, inputs: Any, kwargs: Optional[Dict[str, Any]] = None) -> None:
+            if idx > 0 and self.residual_cache is not None and self.residual_cache.skip_active:
+                return
             target_dev = self._resolve_active_device(inputs, kwargs)
             if self._auto_device:
                 move_non_persistent_buffers(module, target_dev)
@@ -340,9 +380,13 @@ class TorchBlockStreamer:
                 self.bytes_streamed += dev_t.numel() * dev_t.element_size()
 
             if self._prefetch_stream is not None and target_dev == self.compute_device:
-                self._prefetch_cpu_block(next_peer_idx)
+                # Hold block-0 prefetch when residual cache is active until block-0 declares a miss.
+                if not (idx == 0 and self.residual_cache is not None and self.residual_cache.enabled):
+                    self._prefetch_cpu_block(next_peer_idx)
 
         def _post_hook(module: Any, _inputs: Any, _output: Any) -> None:
+            if idx > 0 and self.residual_cache is not None and self.residual_cache.skip_active:
+                return
             for rel_name, is_param, cpu_t in self._cpu_shadow[idx]:
                 assign_tensor(module, rel_name, cpu_t, is_param)
             if self._prefetch_stream is not None and self.compute_device.type == "cuda":
@@ -361,6 +405,8 @@ class TorchBlockStreamer:
         import torch
 
         def _pre_hook(module: Any, inputs: Any, kwargs: Optional[Dict[str, Any]] = None) -> None:
+            if idx > 0 and self.residual_cache is not None and self.residual_cache.skip_active:
+                return
             target_dev = self._resolve_active_device(inputs, kwargs)
             if self._auto_device:
                 move_non_persistent_buffers(module, target_dev)
@@ -370,6 +416,8 @@ class TorchBlockStreamer:
                 self.bytes_streamed += loader.get_tensor_byte_size(real_key)
 
         def _post_hook(module: Any, _inputs: Any, _output: Any) -> None:
+            if idx > 0 and self.residual_cache is not None and self.residual_cache.skip_active:
+                return
             for rel_name, is_param, _, _, orig_dtype in self._mmap_map[idx]:
                 assign_tensor(module, rel_name, torch.empty(0, dtype=orig_dtype, device="cpu"), is_param)
             self.blocks_executed += 1
@@ -382,6 +430,8 @@ class TorchBlockStreamer:
 
     def detach(self, restore_cpu_weights: bool = True) -> None:
         """Remove all forward hooks, restore CPU shadow weights if applicable, and close mmaps."""
+        if self.residual_cache is not None:
+            self.residual_cache.detach()
         for h in self._hooks:
             h.remove()
         self._hooks.clear()

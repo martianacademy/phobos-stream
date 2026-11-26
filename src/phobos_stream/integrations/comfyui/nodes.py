@@ -138,6 +138,9 @@ class PhobosBlockStreamPatcherNode:
             "optional": {
                 "vram_budget_mb": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 65536.0, "step": 256.0}),
                 "safetensors_path": ("STRING", {"default": ""}),
+                "cache_rel_l1_thresh": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "cache_warmup_steps": ("INT", {"default": 2, "min": 1, "max": 20}),
+                "cache_max_consecutive_skips": ("INT", {"default": 3, "min": 1, "max": 10}),
             },
         }
 
@@ -152,6 +155,9 @@ class PhobosBlockStreamPatcherNode:
         mode: str = "hybrid_budget",
         vram_budget_mb: float = 0.0,
         safetensors_path: str = "",
+        cache_rel_l1_thresh: float = 0.0,
+        cache_warmup_steps: int = 2,
+        cache_max_consecutive_skips: int = 3,
     ) -> Tuple[Any]:
         patched = model.clone() if hasattr(model, "clone") else model
         streamer = attach_streamer_to_comfy_model(
@@ -159,6 +165,9 @@ class PhobosBlockStreamPatcherNode:
             block_stream_mode=mode,
             unet_name=safetensors_path.strip(),
             vram_budget_mb=vram_budget_mb if vram_budget_mb > 0 else None,
+            cache_rel_l1_thresh=cache_rel_l1_thresh,
+            cache_warmup_steps=cache_warmup_steps,
+            cache_max_consecutive_skips=cache_max_consecutive_skips,
         )
         setattr(patched, "_phobos_block_streamer", streamer)
         return (patched,)

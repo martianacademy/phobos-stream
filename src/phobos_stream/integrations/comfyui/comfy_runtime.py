@@ -200,10 +200,26 @@ def attach_streamer_to_comfy_model(
     block_stream_mode: str = "hybrid_budget",
     unet_name: str = "",
     vram_budget_mb: Optional[float] = None,
+    cache_rel_l1_thresh: float = 0.0,
+    cache_warmup_steps: int = 2,
+    cache_max_consecutive_skips: int = 3,
 ) -> Optional[TorchBlockStreamer]:
-    """Attach `TorchBlockStreamer` onto a ComfyUI `ModelPatcher`'s underlying `diffusion_model`."""
+    """Attach `TorchBlockStreamer` (and optional First-Block Cache) onto a ComfyUI `ModelPatcher`."""
     mode = BlockStreamMode(block_stream_mode)
     if mode == BlockStreamMode.STAGE_ONLY:
+        if cache_rel_l1_thresh > 0.0:
+            from phobos_stream.streaming.first_block_cache import FirstBlockResidualCache
+
+            diff_only = comfy_model.get_model_object("diffusion_model") if hasattr(comfy_model, "get_model_object") else comfy_model
+            prev_c = getattr(comfy_model, "_phobos_residual_cache", None)
+            if prev_c is not None and hasattr(prev_c, "detach"):
+                prev_c.detach()
+            cache = FirstBlockResidualCache(
+                rel_l1_thresh=cache_rel_l1_thresh,
+                warmup_steps=cache_warmup_steps,
+                max_consecutive_skips=cache_max_consecutive_skips,
+            ).attach(diff_only)
+            setattr(comfy_model, "_phobos_residual_cache", cache)
         return None
 
     diff_mod = None
@@ -233,12 +249,19 @@ def attach_streamer_to_comfy_model(
         except Exception:
             pass
 
+    prev_streamer = getattr(comfy_model, "_phobos_block_streamer", None)
+    if prev_streamer is not None and hasattr(prev_streamer, "detach"):
+        prev_streamer.detach()
+
     streamer = TorchBlockStreamer(
         model=diff_mod,
         compute_device="auto",
         mode=mode,
         safetensors_paths=st_paths,
         vram_budget_mb=vram_budget_mb if (vram_budget_mb and vram_budget_mb > 0) else None,
+        cache_rel_l1_thresh=cache_rel_l1_thresh,
+        cache_warmup_steps=cache_warmup_steps,
+        cache_max_consecutive_skips=cache_max_consecutive_skips,
     )
     streamer.attach()
 
