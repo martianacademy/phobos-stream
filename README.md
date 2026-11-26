@@ -1,7 +1,7 @@
 # <img src="https://raw.githubusercontent.com/martianacademy/phobos-stream/main/assets/icon.png" width="42" align="top" alt="PhobosStream Icon" /> PhobosStream
 
 [![PyPI Version](https://img.shields.io/pypi/v/phobos-stream?color=EE6A3E&label=PyPI)](https://pypi.org/project/phobos-stream/)
-[![Comfy Registry](https://img.shields.io/badge/Comfy_Registry-v0.3.1-EE6A3E)](https://registry.comfy.org/publishers/martianacademy/nodes/comfyui-phobosstream)
+[![Comfy Registry](https://img.shields.io/badge/Comfy_Registry-v0.4.0-EE6A3E)](https://registry.comfy.org/publishers/martianacademy/nodes/comfyui-phobosstream)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/martianacademy/phobos-stream/blob/main/notebooks/MiniMax_H3_Free_T4_PhobosStream.ipynb)
 [![CI Tests](https://github.com/martianacademy/phobos-stream/actions/workflows/ci.yml/badge.svg)](https://github.com/martianacademy/phobos-stream/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://www.python.org/)
@@ -9,7 +9,7 @@
 
 **PhobosStream** is a universal zero-VRAM diffusion streaming engine built to run massive **12B–33B+ Video and Image Diffusion Transformers (DiTs)** — including **MiniMax-H3 (33B Omni Video+Audio)**, **Alibaba Wan2.1 (14B)**, **Black Forest Labs FLUX.1 (12B)**, **Lumina2 / Z-Image-Turbo**, and **Tencent HunyuanVideo (13B)** — on consumer hardware without Out-Of-Memory (OOM) crashes.
 
-By combining **3-Stage Sequential Offloading** (`Text Encoder -> DiT -> Tiled VAE`) with **Hook-Based Zero-Copy `mmap` & 3-Tier `HYBRID_BUDGET` Streaming** (`TorchBlockStreamer` & `MLXBlockStreamer`), PhobosStream cuts Peak GPU Memory by **93%–96.8%** with **zero quantization quality loss**.
+By combining **3-Stage Sequential Offloading** (`Text Encoder -> DiT -> Tiled VAE`), **Hook-Based Zero-Copy `mmap` & 3-Tier `HYBRID_BUDGET` Streaming**, and **Zero-DMA TeaCache / First-Block Residual Caching**, PhobosStream cuts Peak GPU Memory by **86%–96.8%** while running up to **`1.94×` faster than ComfyUI native `--lowvram`**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/martianacademy/phobos-stream/main/assets/minimax_h3_demo.gif" width="560" alt="MiniMax-H3 5.9s Video + 32kHz Stereo Audio generated on Free 12GB RAM Tesla T4 via PhobosStream" />
@@ -44,6 +44,17 @@ By combining **3-Stage Sequential Offloading** (`Text Encoder -> DiT -> Tiled VA
 | **`PhobosVAEStreamPatcher (hybrid_budget 3 GB)`** | **`21 / 15`** | **`3,159.1 MB`** | **`78.3%`** | **`38.37 s`** | **`1.33×` faster** | **`0.0` (Bit-Exact)** |
 | **`PhobosVAEStreamPatcher (hybrid_budget 6 GB)`** | **`36 / 0`** | **`4,822.5 MB`** | **`66.9%`** | **`32.75 s`** | **`1.56×` faster** | **`0.0` (Bit-Exact)** |
 | **`PhobosVAEStreamPatcher` (`32 kHz` Stereo Audio VAE)** | `64`-step overlapped chunks | **`259.6 MB`** | **`98.2%`** | **`1.95 s`** | — | `[1, 2, 188000]` stereo (`RMS 0.110`) |
+
+*0c. **Head-to-Head Stage-2 DiT Benchmark: `Wan2.1-T2V-14B FP8` (`14.29 GB`, 40 blocks, `832×480` × `17` frames × `12` steps) vs ComfyUI Native `--lowvram` on NVIDIA Tesla T4 (`14.58 GiB` VRAM, `32 GiB` RAM, `torch 2.11.0+cu128`):** (`outputs/modal_t4_wan14b_bench/wan14b_12step_fbcache_report.json`)*
+
+| Engine / Mode | Block Residency (`GPU / CPU`) | Peak CUDA VRAM | VRAM Saved vs ComfyUI | 12-Step Wall Time (`sec/step`) | Speedup vs ComfyUI `--lowvram` | Latent Fidelity (`PSNR / Cosine Sim`) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **ComfyUI Native `--lowvram`** *(Baseline)* | Dynamic sync | `14,135.9 MB` (`13.80 GiB`) | `0.0%` | `180.73 s` (`15.06 s`) | `1.00×` | Reference |
+| **`PhobosBlockStreamPatcher` (`cpu_offload`, Lossless)** | **`0 / 40`** *(Pinned Async)* | **`1,808.2 MB` (`1.77 GiB`)** | **`87.2%`** | **`178.83 s` (`14.90 s`)** | **`1.01×` faster** | **`0.0` Bit-Exact (`99.99 dB` / `1.0000`)** |
+| **`PhobosBlockStreamPatcher` + TeaCache/FBCache (`0.12`)** | **`0 / 40`** *(4/12 steps skipped)* | **`1,960.5 MB` (`1.91 GiB`)** | **`86.1%`** | **`120.39 s` (`10.03 s`)** | **`1.50×` faster** | **`42.67 dB` PSNR (`0.9995` cos)** |
+| **`PhobosBlockStreamPatcher` + TeaCache/FBCache (`0.22`)** | **`0 / 40`** *(6/12 steps skipped)* | **`1,960.5 MB` (`1.91 GiB`)** | **`86.1%`** | **`93.11 s` (`7.76 s`)** | **`1.94×` faster** | **`35.91 dB` PSNR (`0.9973` cos)** |
+
+> **Startup Note:** One-time 4-thread parallel `pin_memory` setup takes `patch_sec ≈ 8.0s` (`load 9.1s + patch 8.1s = 17.2s` total vs ComfyUI's `30.4s` cold load). On cache-hit steps, `FirstBlockResidualCache` skips both compute and PCIe DMA for all 39 remaining blocks (`0.4s`/step vs `15.0s`/step, cutting total PCIe bytes streamed from `160.9 GB` down to `82.4 GB`).
 
 *1. **Real `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` (~14.5 GB BF16: `UMT5-XXL` + 30-block `WanDiT` + 3D `WanVAE`)** under an enforced **`8.00 GiB` CUDA VRAM limit** (`torch.cuda.set_per_process_memory_fraction`, native widescreen **`832×480`**, `25 frames`, `40 steps`, `flow_shift=3.0` via standalone FastAPI `/v1/videos/generations`):*
 
