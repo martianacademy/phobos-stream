@@ -36,12 +36,13 @@ def create_app(
     stream_mode: BlockStreamMode = BlockStreamMode.HYBRID_BUDGET,
     vram_budget_mb: Optional[float] = None,
     ram_budget_mb: Optional[float] = None,
+    cache_rel_l1_thresh: float = 0.0,
 ) -> FastAPI:
     """Factory to create configured FastAPI service supporting shard manifests and real HF models."""
     app = FastAPI(
         title="PhobosStream API Gateway",
         description="Universal Zero-VRAM Video & Image Diffusion Streaming Engine",
-        version="0.2.2",
+        version="0.5.0",
     )
 
     app.add_middleware(
@@ -67,6 +68,7 @@ def create_app(
             stream_mode=stream_mode,
             vram_budget_mb=vram_budget_mb,
             ram_budget_mb=ram_budget_mb,
+            cache_rel_l1_thresh=cache_rel_l1_thresh,
         )
     else:
         if manifest is None:
@@ -113,6 +115,7 @@ def create_app(
                 "backend": hf_engine.backend_name,
                 "architecture": hf_engine.model_id,
                 "stream_mode": hf_engine.stream_mode.value,
+                "cache_rel_l1_thresh": hf_engine.cache_rel_l1_thresh,
                 "tier_summary": hf_engine.last_tier_summary,
             }
         assert engine is not None and manifest is not None
@@ -160,6 +163,7 @@ def create_app(
                     steps=req.steps,
                     guidance_scale=req.guidance_scale,
                     seed=base_seed + idx,
+                    cache_rel_l1_thresh=max(cache_rel_l1_thresh, req.cache_rel_l1_thresh),
                 )
                 rgb_frames, _ = active_runner.generate(config, progress_callback=_make_progress_cb())
                 png_bytes = encode_png_bytes(rgb_frames[0])
@@ -191,6 +195,7 @@ def create_app(
             steps=req.steps,
             guidance_scale=req.guidance_scale,
             seed=req.seed if req.seed is not None else 42,
+            cache_rel_l1_thresh=max(cache_rel_l1_thresh, req.cache_rel_l1_thresh),
         )
         active_runner: Any = hf_engine if hf_engine is not None else engine
         try:
@@ -210,6 +215,7 @@ def create_app(
             total_time_sec=round(metrics.total_time_sec, 2),
             peak_vram_mb=round(metrics.peak_vram_mb, 2),
             io_throughput_mb_s=round(metrics.io_throughput_mb_s, 2),
+            skipped_steps=int(metrics.skipped_steps),
         )
 
     @app.websocket("/ws/progress")

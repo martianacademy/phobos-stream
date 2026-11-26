@@ -64,6 +64,12 @@ class GenerationConfig(BaseModel):
     seed: int = Field(default=42, description="Random seed for reproducible noise")
     block_stream: bool = Field(default=True, description="Enable block-by-block disk streaming")
     precision: QuantPrecision = Field(default=QuantPrecision.BF16, description="Working precision")
+    cache_rel_l1_thresh: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=0.5,
+        description="Optional TeaCache / First-Block Residual Cache relative L1 threshold (0.0 = lossless)",
+    )
 
 
 class PipelineMetrics(BaseModel):
@@ -77,3 +83,4 @@ class PipelineMetrics(BaseModel):
     disk_bytes_read_mb: float = 0.0
     io_throughput_mb_s: float = 0.0
     steps_completed: int = 0
+    skipped_steps: int = 0

@@ -15,6 +15,7 @@ class ImageGenerationRequest(BaseModel):
     steps: int = Field(default=20, ge=1, le=100)
     guidance_scale: float = Field(default=5.0, ge=1.0, le=20.0)
     seed: Optional[int] = Field(default=42)
+    cache_rel_l1_thresh: float = Field(default=0.0, ge=0.0, le=0.5, description="Optional TeaCache / FBCache relative L1 threshold")
 
 
 class VideoGenerationRequest(BaseModel):
@@ -30,6 +31,7 @@ class VideoGenerationRequest(BaseModel):
     steps: int = Field(default=36, ge=1, le=100)
     guidance_scale: float = Field(default=5.0, ge=1.0, le=20.0)
     seed: Optional[int] = Field(default=42)
+    cache_rel_l1_thresh: float = Field(default=0.0, ge=0.0, le=0.5, description="Optional TeaCache / FBCache relative L1 threshold")
 
 
 class GenerationData(BaseModel):
@@ -57,3 +59,4 @@ class VideoGenerationResponse(BaseModel):
     total_time_sec: float
     peak_vram_mb: float
     io_throughput_mb_s: float
+    skipped_steps: int = 0

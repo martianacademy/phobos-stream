@@ -233,3 +233,102 @@ def stream_single_zimage_block_mmap(
     if hasattr(mx, "clear_cache"):
         mx.clear_cache()
     return x, bytes_read
+
+
+def load_resident_fused_zimage_block(
+    loader: MMapTensorLoader,
+    prefix: str,
+    has_adaln: bool,
+) -> Tuple[dict, int]:
+    """Load and pre-fuse (`qkv_t`, `w13_t`) a single Z-Image block via `mmap` for `hybrid_stream`."""
+    import mlx.core as mx
+
+    bytes_loaded = 0
+
+    def rd(suffix: str) -> Any:
+        nonlocal bytes_loaded
+        key = f"{prefix}.{suffix}"
+        bytes_loaded += loader.get_tensor_byte_size(key)
+        return loader.read_mlx_array(key, target_dtype=mx.bfloat16)
+
+    qkv_w = rd("attention.qkv.weight")
+    qkv_t = mx.contiguous(qkv_w.T)
+    del qkv_w
+    w1, w3 = rd("feed_forward.w1.weight"), rd("feed_forward.w3.weight")
+    w13_t = mx.contiguous(mx.concatenate([w1, w3], axis=0).T)
+    del w1, w3
+
+    blk = {
+        "has_adaln": has_adaln,
+        "norm1_w": rd("attention_norm1.weight"),
+        "qn_w": rd("attention.q_norm.weight"),
+        "kn_w": rd("attention.k_norm.weight"),
+        "out_t": mx.contiguous(rd("attention.out.weight").T),
+        "norm2_w": rd("attention_norm2.weight"),
+        "ffn1_w": rd("ffn_norm1.weight"),
+        "ffn2_w": rd("ffn_norm2.weight"),
+        "w2_t": mx.contiguous(rd("feed_forward.w2.weight").T),
+        "qkv_t": qkv_t,
+        "w13_t": w13_t,
+    }
+    if has_adaln:
+        blk["ada_t"] = mx.contiguous(rd("adaLN_modulation.0.weight").T)
+        blk["ada_b"] = rd("adaLN_modulation.0.bias")
+
+    mx.eval(*[v for v in blk.values() if isinstance(v, mx.array)])
+    return blk, bytes_loaded
+
+
+def exec_resident_fused_zimage_block(
+    blk: dict,
+    x: Any,
+    freqs_cis: Any,
+    t_emb: Optional[Any],
+) -> Any:
+    """Execute a Metal-resident pre-fused Z-Image block with zero `mmap` I/O or `.T` copies."""
+    import mlx.core as mx
+    import mlx.nn as nn
+    from mlx.core.fast import rms_norm, scaled_dot_product_attention
+
+    b, seq_len, dim = x.shape
+    n_heads, head_dim = 30, 128
+    has_adaln = bool(blk["has_adaln"]) and t_emb is not None
+
+    if has_adaln:
+        scale_msa, gate_msa, scale_mlp, gate_mlp = mx.split(
+            mx.expand_dims(mx.matmul(t_emb, blk["ada_t"]) + blk["ada_b"], axis=1), 4, axis=2
+        )
+        norm1_x = rms_norm(x, blk["norm1_w"], 1e-5) * (1.0 + scale_msa)
+    else:
+        norm1_x = rms_norm(x, blk["norm1_w"], 1e-5)
+
+    q, k, v = mx.split(mx.matmul(norm1_x, blk["qkv_t"]), 3, axis=-1)
+    q = apply_mlx_rope_3d(rms_norm(q.reshape(b, seq_len, n_heads, head_dim), blk["qn_w"], 1e-5), freqs_cis)
+    k = apply_mlx_rope_3d(rms_norm(k.reshape(b, seq_len, n_heads, head_dim), blk["kn_w"], 1e-5), freqs_cis)
+    v = (v * 0.25).reshape(b, seq_len, n_heads, head_dim)
+
+    attn = scaled_dot_product_attention(
+        mx.transpose(q, (0, 2, 1, 3)),
+        mx.transpose(k, (0, 2, 1, 3)),
+        mx.transpose(v, (0, 2, 1, 3)),
+        scale=head_dim ** -0.5,
+        mask=None,
+    )
+    attn = mx.matmul(mx.transpose(attn, (0, 2, 1, 3)).reshape(b, seq_len, dim), blk["out_t"]) * 4.0
+
+    if has_adaln:
+        x = x + mx.tanh(gate_msa) * rms_norm(attn, blk["norm2_w"], 1e-5)
+        ffn_in = rms_norm(x, blk["ffn1_w"], 1e-5) * (1.0 + scale_mlp)
+    else:
+        x = x + rms_norm(attn, blk["norm2_w"], 1e-5)
+        ffn_in = rms_norm(x, blk["ffn1_w"], 1e-5)
+
+    gate, up = mx.split(mx.matmul(ffn_in, blk["w13_t"]), 2, axis=-1)
+    ffn_out = mx.matmul(nn.silu(gate) * up, blk["w2_t"])
+    out = (
+        x + mx.tanh(gate_mlp) * rms_norm(ffn_out, blk["ffn2_w"], 1e-5)
+        if has_adaln
+        else x + rms_norm(ffn_out, blk["ffn2_w"], 1e-5)
+    )
+    mx.eval(out)
+    return out

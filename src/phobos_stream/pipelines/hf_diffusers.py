@@ -1,14 +1,18 @@
 """Real HuggingFace Diffusers 3-stage sequential & block-streamed engine (Wan2.1, FLUX, SDXL)."""
 
-from contextlib import contextmanager
 import html
 from pathlib import Path
 import re
-from typing import Any, Callable, Dict, Iterator, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Optional, Tuple, Union
 import numpy as np
 
 from phobos_stream.pipeline.stage_runner import StageSequentialRunner, flush_accelerator_memory
-from phobos_stream.streaming import BlockStreamMode, TorchBlockStreamer
+from phobos_stream.streaming import (
+    BlockStreamMode,
+    FirstBlockResidualCache,
+    PhobosAttentionFastpath,
+    TorchBlockStreamer,
+)
 from phobos_stream.types import GenerationConfig, PipelineMetrics
 
 
@@ -19,38 +23,6 @@ DEFAULT_WAN_NEGATIVE_PROMPT = (
     "misshapen limbs, fused fingers, still picture, messy background, three legs, many people "
     "in the background, walking backwards"
 )
-
-
-@contextmanager
-def _pre_ampere_bf16_sdpa_fastpath(device_str: str) -> Iterator[None]:
-    """Use fused FP16 SDPA on Turing/Volta CUDA (< SM80) when model activations are BF16."""
-    import torch
-    import torch.nn.functional as F
-
-    use_fastpath = False
-    if device_str.startswith("cuda") and torch.cuda.is_available():
-        major, _ = torch.cuda.get_device_capability(torch.device(device_str))
-        use_fastpath = major < 8
-
-    if not use_fastpath:
-        yield
-        return
-
-    orig_sdpa = F.scaled_dot_product_attention
-
-    def _wrapped_sdpa(query: Any, key: Any, value: Any, *args: Any, **kwargs: Any) -> Any:
-        if query.dtype == torch.bfloat16 and query.is_cuda:
-            q16 = query.clamp(-65000.0, 65000.0).to(torch.float16)
-            k16 = key.clamp(-65000.0, 65000.0).to(torch.float16)
-            v16 = value.clamp(-65000.0, 65000.0).to(torch.float16)
-            return orig_sdpa(q16, k16, v16, *args, **kwargs).to(torch.bfloat16)
-        return orig_sdpa(query, key, value, *args, **kwargs)
-
-    F.scaled_dot_product_attention = _wrapped_sdpa
-    try:
-        yield
-    finally:
-        F.scaled_dot_product_attention = orig_sdpa
 
 
 def _clean_prompt_text(text: str) -> str:
@@ -89,6 +61,8 @@ class HFDiffusersStreamEngine:
         vram_budget_mb: Optional[float] = None,
         ram_budget_mb: Optional[float] = None,
         torch_dtype_name: str = "bfloat16",
+        cache_rel_l1_thresh: float = 0.0,
+        attention_mode: str = "auto",
     ) -> None:
         import torch
 
@@ -96,7 +70,10 @@ class HFDiffusersStreamEngine:
         self.stream_mode = BlockStreamMode(stream_mode)
         self.vram_budget_mb = vram_budget_mb
         self.ram_budget_mb = ram_budget_mb
+        self.cache_rel_l1_thresh = float(cache_rel_l1_thresh)
+        self.attention_mode = attention_mode
         self.last_tier_summary: Dict[str, int] = {}
+        self.last_skipped_steps: int = 0
 
         if device == "auto":
             if torch.cuda.is_available():
@@ -232,6 +209,7 @@ class HFDiffusersStreamEngine:
             ).eval()
 
             dit_shards = _resolve_cached_safetensors(self.model_id, "transformer")
+            eff_thresh = max(self.cache_rel_l1_thresh, float(config.cache_rel_l1_thresh))
             with TorchBlockStreamer(
                 transformer,
                 compute_device=self.device,
@@ -240,6 +218,8 @@ class HFDiffusersStreamEngine:
                 vram_budget_mb=self.vram_budget_mb,
                 ram_budget_mb=self.ram_budget_mb,
                 activation_reserve_mb=1536,
+                cache_rel_l1_thresh=eff_thresh,
+                attention_mode=self.attention_mode,
             ) as streamer:
                 self.last_tier_summary = streamer.tier_summary
                 pipe_dit = WanPipeline(
@@ -258,7 +238,7 @@ class HFDiffusersStreamEngine:
                     if cond["negative_prompt_embeds"] is not None and config.guidance_scale > 1.0
                     else None
                 )
-                with torch.no_grad(), _pre_ampere_bf16_sdpa_fastpath(self.device):
+                with torch.no_grad():
                     out = pipe_dit(
                         prompt=None,
                         negative_prompt=None,
@@ -274,6 +254,9 @@ class HFDiffusersStreamEngine:
                     )
                 latents_cpu = out.frames.detach().to("cpu")
                 bytes_streamed = streamer.bytes_streamed
+                self.last_skipped_steps = (
+                    int(streamer.residual_cache.skipped_steps) if streamer.residual_cache is not None else 0
+                )
 
             del pipe_dit, transformer, scheduler, meta_vae, pos_dev, neg_dev
             raw_latents_holder["latents"] = latents_cpu.float().numpy()
@@ -313,6 +296,7 @@ class HFDiffusersStreamEngine:
             total_steps=config.steps,
             progress_callback=progress_callback,
         )
+        metrics.skipped_steps = self.last_skipped_steps
         if torch.cuda.is_available() and self.device.startswith("cuda"):
             metrics.peak_vram_mb = float(torch.cuda.max_memory_allocated(self.device)) / (1024.0 * 1024.0)
         flush_accelerator_memory()
@@ -341,30 +325,42 @@ class HFDiffusersStreamEngine:
         if hasattr(pipe, "vae") and pipe.vae is not None and hasattr(pipe.vae, "enable_tiling"):
             pipe.vae.enable_tiling()
 
+        eff_thresh = max(self.cache_rel_l1_thresh, float(config.cache_rel_l1_thresh))
+        backbone = getattr(pipe, "transformer", None) or getattr(pipe, "unet", None)
+        fb_cache = FirstBlockResidualCache(rel_l1_thresh=eff_thresh).attach(backbone) if (backbone is not None and eff_thresh > 0.0) else None
+
         gen = torch.Generator(device="cpu").manual_seed(int(config.seed))
         runner = StageSequentialRunner()
 
         def _denoise(_cond: Any) -> Tuple[Any, int, int]:
-            out = pipe(
-                prompt=config.prompt,
-                negative_prompt=config.negative_prompt or None,
-                height=config.height,
-                width=config.width,
-                num_inference_steps=config.steps,
-                guidance_scale=config.guidance_scale,
-                generator=gen,
-                output_type="np",
-            )
+            with PhobosAttentionFastpath(mode=self.attention_mode):
+                out = pipe(
+                    prompt=config.prompt,
+                    negative_prompt=config.negative_prompt or None,
+                    height=config.height,
+                    width=config.width,
+                    num_inference_steps=config.steps,
+                    guidance_scale=config.guidance_scale,
+                    generator=gen,
+                    output_type="np",
+                )
             imgs = np.clip(out.images * 255.0, 0, 255).astype(np.uint8)
             return imgs, config.steps, 0
 
-        frames, metrics = runner.run(
-            encode_fn=lambda: None,
-            denoise_fn=_denoise,
-            decode_fn=lambda arr: arr,
-            total_steps=config.steps,
-            progress_callback=progress_callback,
-        )
+        try:
+            frames, metrics = runner.run(
+                encode_fn=lambda: None,
+                denoise_fn=_denoise,
+                decode_fn=lambda arr: arr,
+                total_steps=config.steps,
+                progress_callback=progress_callback,
+            )
+            if fb_cache is not None:
+                self.last_skipped_steps = int(fb_cache.skipped_steps)
+                metrics.skipped_steps = self.last_skipped_steps
+        finally:
+            if fb_cache is not None:
+                fb_cache.detach()
         if torch.cuda.is_available() and self.device.startswith("cuda"):
             metrics.peak_vram_mb = float(torch.cuda.max_memory_allocated(self.device)) / (1024.0 * 1024.0)
         del pipe

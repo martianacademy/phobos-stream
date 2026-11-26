@@ -170,3 +170,95 @@ def test_comfy_first_block_cache_node_chained_and_standalone() -> None:
         assert solo_cache.skipped_steps >= 1
     finally:
         solo_cache.detach()
+
+
+def test_flux_mmdit_dual_stream_and_single_stream_multi_group_cache() -> None:
+    """Verify FLUX/Hunyuan MMDiT (`double_blocks` kwargs `(img, txt)` + `cat` + `single_blocks`)."""
+    torch = pytest.importorskip("torch")
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    torch.manual_seed(11)
+
+    class _DoubleBlock(nn.Module):
+        def __init__(self, dim: int = 24) -> None:
+            super().__init__()
+            self.img_lin = nn.Linear(dim, dim)
+            self.txt_lin = nn.Linear(dim, dim)
+            nn.init.normal_(self.img_lin.weight, 0.0, 0.03)
+            nn.init.normal_(self.txt_lin.weight, 0.0, 0.03)
+
+        def forward(self, *, img: torch.Tensor, txt: torch.Tensor, vec: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+            # Mutate in-place (`+=`) exactly like ComfyUI `comfy/ldm/flux/layers.py` `DoubleStreamBlock`!
+            img += 0.1 * torch.tanh(self.img_lin(img) + vec)
+            txt += 0.1 * torch.tanh(self.txt_lin(txt))
+            return img, txt
+
+    class _SingleBlock(nn.Module):
+        def __init__(self, dim: int = 24) -> None:
+            super().__init__()
+            self.lin = nn.Linear(dim, dim)
+            nn.init.normal_(self.lin.weight, 0.0, 0.03)
+
+        def forward(self, x: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
+            # Mutate in-place (`+=`) exactly like ComfyUI `SingleStreamBlock`!
+            x += 0.1 * torch.tanh(self.lin(x) + vec)
+            return x
+
+    class _MiniFluxMMDiT(nn.Module):
+        def __init__(self, dim: int = 24) -> None:
+            super().__init__()
+            self.img_in = nn.Linear(dim, dim)
+            self.txt_in = nn.Linear(dim, dim)
+            self.double_blocks = nn.ModuleList([_DoubleBlock(dim) for _ in range(4)])
+            self.single_blocks = nn.ModuleList([_SingleBlock(dim) for _ in range(6)])
+            self.final_layer = nn.Linear(dim, dim)
+
+        def forward(self, x: torch.Tensor, timestep: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
+            vec = (1.0 + 0.04 * timestep.view(-1, 1, 1)).expand(-1, 1, x.shape[-1])
+            img = self.img_in(x)
+            txt = self.txt_in(context)
+            for blk in self.double_blocks:
+                img, txt = blk(img=img, txt=txt, vec=vec)
+            cat_x = torch.cat((txt, img), dim=1)
+            for blk in self.single_blocks:
+                cat_x = blk(cat_x, vec=vec)
+            img_out = cat_x[:, txt.shape[1] :, :]
+            return self.final_layer(img_out)
+
+    flux_ref = _MiniFluxMMDiT(dim=24).eval()
+    flux_fast = _MiniFluxMMDiT(dim=24).eval()
+    flux_fast.load_state_dict(flux_ref.state_dict())
+
+    sigmas = torch.linspace(1.0, 0.1, steps=8)
+    x0 = torch.randn(1, 12, 24)
+    ctx = torch.randn(1, 6, 24)
+
+    x_ref = x0.clone()
+    with TorchBlockStreamer(flux_ref, compute_device="cpu", mode=BlockStreamMode.CPU_OFFLOAD) as ref_s:
+        with torch.no_grad():
+            for s in sigmas:
+                x_ref = x_ref - 0.02 * flux_ref(x_ref, s.unsqueeze(0), ctx)
+        assert ref_s.blocks_executed == 8 * 10  # 4 double + 6 single = 10 blocks/step
+
+    x_fast = x0.clone()
+    with TorchBlockStreamer(
+        flux_fast,
+        compute_device="cpu",
+        mode=BlockStreamMode.CPU_OFFLOAD,
+        cache_rel_l1_thresh=0.18,
+        cache_warmup_steps=2,
+        cache_max_consecutive_skips=2,
+    ) as fast_s:
+        with torch.no_grad():
+            for s in sigmas:
+                x_fast = x_fast - 0.02 * flux_fast(x_fast, s.unsqueeze(0), ctx)
+        assert fast_s.residual_cache is not None
+        skipped = fast_s.residual_cache.skipped_steps
+        # On every skipped step, ONLY double_blocks[0] executes (9 of 10 blocks + DMA skipped!)
+        assert skipped >= 3
+        assert fast_s.blocks_executed == (8 - skipped) * 10 + skipped * 1
+        assert fast_s.bytes_streamed < ref_s.bytes_streamed * 0.72
+
+    cos = float(F.cosine_similarity(x_ref.flatten(), x_fast.flatten(), dim=0).item())
+    assert cos > 0.999, f"Expected >0.999 cosine similarity on MMDiT, got {cos}"

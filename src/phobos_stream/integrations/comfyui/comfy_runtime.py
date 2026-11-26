@@ -203,6 +203,8 @@ def attach_streamer_to_comfy_model(
     cache_rel_l1_thresh: float = 0.0,
     cache_warmup_steps: int = 2,
     cache_max_consecutive_skips: int = 3,
+    attn_mode: str = "auto",
+    attn_chunk_size: int = 8192,
 ) -> Optional[TorchBlockStreamer]:
     """Attach `TorchBlockStreamer` (and optional First-Block Cache) onto a ComfyUI `ModelPatcher`."""
     mode = BlockStreamMode(block_stream_mode)
@@ -262,6 +264,8 @@ def attach_streamer_to_comfy_model(
         cache_rel_l1_thresh=cache_rel_l1_thresh,
         cache_warmup_steps=cache_warmup_steps,
         cache_max_consecutive_skips=cache_max_consecutive_skips,
+        attn_mode=attn_mode,
+        attn_chunk_size=attn_chunk_size,
     )
     streamer.attach()
 

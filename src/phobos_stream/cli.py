@@ -29,6 +29,7 @@ def main() -> None:
 @click.option("--stream-mode", default="hybrid_budget", type=click.Choice(["hybrid_budget", "cpu_offload", "mmap_stream", "stage_only"]))
 @click.option("--vram-budget-mb", default=None, type=float, help="Optional GPU VRAM budget in MB for hybrid block residency")
 @click.option("--ram-budget-mb", default=None, type=float, help="Optional CPU RAM budget in MB for hybrid block residency")
+@click.option("--cache-thresh", default=0.0, type=float, help="Optional TeaCache / First-Block Residual Cache relative L1 threshold (e.g. 0.12)")
 @click.option("--backend", default="auto", type=click.Choice(["auto", "mlx", "cuda", "gguf", "cpu"]))
 @click.option("--allow-synthetic", is_flag=True, default=False, help="Allow synthetic benchmark weights when no model is set")
 def serve(
@@ -39,6 +40,7 @@ def serve(
     stream_mode: str,
     vram_budget_mb: Optional[float],
     ram_budget_mb: Optional[float],
+    cache_thresh: float,
     backend: str,
     allow_synthetic: bool,
 ) -> None:
@@ -52,6 +54,7 @@ def serve(
         stream_mode=BlockStreamMode(stream_mode),
         vram_budget_mb=vram_budget_mb,
         ram_budget_mb=ram_budget_mb,
+        cache_rel_l1_thresh=cache_thresh,
     )
     target = hf_model or (manifest.model_name if manifest else "default")
     click.echo(f"[*] Starting PhobosStream Gateway on http://{host}:{port} [Model: {target} | Mode: {stream_mode}]")
@@ -72,6 +75,7 @@ def serve(
 @click.option("--stream-mode", default="hybrid_budget", type=click.Choice(["hybrid_budget", "cpu_offload", "mmap_stream", "stage_only"]))
 @click.option("--vram-budget-mb", default=None, type=float, help="Optional GPU VRAM budget in MB")
 @click.option("--ram-budget-mb", default=None, type=float, help="Optional CPU RAM budget in MB")
+@click.option("--cache-thresh", default=0.0, type=float, help="Optional TeaCache / First-Block Residual Cache relative L1 threshold (e.g. 0.12)")
 @click.option("--manifest-path", default=None, type=click.Path(exists=True), help="Path to shard manifest.json")
 @click.option("--allow-synthetic", is_flag=True, default=False, help="Explicitly run synthetic benchmark mode")
 @click.option("--output", "-o", default="outputs/generated.mp4", help="Output file path (.mp4 or .png)")
@@ -90,6 +94,7 @@ def generate(
     stream_mode: str,
     vram_budget_mb: Optional[float],
     ram_budget_mb: Optional[float],
+    cache_thresh: float,
     manifest_path: Optional[str],
     allow_synthetic: bool,
     output: str,
@@ -105,6 +110,7 @@ def generate(
         fps=fps,
         steps=steps,
         guidance_scale=guidance_scale,
+        cache_rel_l1_thresh=cache_thresh,
     )
 
     if hf_model:
@@ -114,6 +120,7 @@ def generate(
             stream_mode=BlockStreamMode(stream_mode),
             vram_budget_mb=vram_budget_mb,
             ram_budget_mb=ram_budget_mb,
+            cache_rel_l1_thresh=cache_thresh,
         )
         click.echo(f"[*] Generating {'Video' if video else 'Image'} via Real HF Pipeline [{hf_model}] ({stream_mode})...")
         rgb_frames, metrics = runner.generate(

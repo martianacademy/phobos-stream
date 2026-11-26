@@ -55,20 +55,18 @@ class PhobosFirstBlockCacheNode:
             )
             existing_streamer.residual_cache = cache if cache.enabled else None
             if cache.enabled:
-                first_post0_cpu = next(
+                cache.attach(existing_streamer.model, blocks=existing_streamer.blocks)
+                p_idx = cache.probe_block_index
+                first_post_probe_cpu = next(
                     (
                         i
                         for i, t in enumerate(existing_streamer._effective_tiers)
-                        if i >= 1 and t == BlockTier.CPU_PINNED
+                        if i > p_idx and t == BlockTier.CPU_PINNED
                     ),
                     None,
                 )
-                miss_cb = (
-                    (lambda: existing_streamer._prefetch_cpu_block(first_post0_cpu))
-                    if (first_post0_cpu is not None and existing_streamer._prefetch_stream is not None)
-                    else None
-                )
-                cache.attach(existing_streamer.model, blocks=existing_streamer.blocks, on_miss_callback=miss_cb)
+                if first_post_probe_cpu is not None and existing_streamer._prefetch_stream is not None:
+                    cache._on_miss_callback = lambda: existing_streamer._prefetch_cpu_block(first_post_probe_cpu)
             return (patched,)
 
         attach_streamer_to_comfy_model(

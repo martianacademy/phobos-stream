@@ -1,15 +1,17 @@
-"""Real Apple Silicon Metal (MLX) Z-Image-Turbo pipeline with 3-stage & per-block mmap streaming."""
+"""Real Apple Silicon Metal (MLX) Z-Image-Turbo pipeline with Stage, Block, Hybrid & FBCache streaming."""
 
 from dataclasses import dataclass
 import gc
 from pathlib import Path
 import resource
 import time
-from typing import Any, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 import numpy as np
 
 from phobos_stream.pipelines.mlx_zimage_blocks import (
     exec_fused_zimage_block,
+    exec_resident_fused_zimage_block,
+    load_resident_fused_zimage_block,
     map_zimage_transformer,
     stream_single_zimage_block_mmap,
 )
@@ -33,6 +35,8 @@ class MLXGenerationResult:
     active_resident_mb: float
     peak_rss_mb: float
     streamed_gb: float
+    resident_blocks: int = 0
+    skipped_steps: int = 0
 
 
 def _rss_mb() -> float:
@@ -62,6 +66,51 @@ def _tokenize_qwen_prompt(prompt: str, tokenizer_dir: Union[str, Path]) -> Tuple
     return enc["input_ids"], mx.array(enc["attention_mask"]), int(np.sum(enc["attention_mask"][0]))
 
 
+def _stream_qwen_text_encode(prompt: str, qwen_path: Union[str, Path], tokenizer_dir: Union[str, Path]) -> Tuple[Any, int]:
+    """Stream 35-layer `Qwen 3.4B` text encoder layer-by-layer in `< 500 MB` Peak Metal memory."""
+    import mlx.core as mx
+    from mlx.utils import tree_flatten, tree_unflatten
+    from mflux.models.z_image.model.z_image_text_encoder.text_encoder import TextEncoder
+
+    bytes_read = 0
+    ids_np, mask_mx, num_valid = _tokenize_qwen_prompt(prompt, tokenizer_dir)
+    with MMapTensorLoader(Path(qwen_path)) as q_loader:
+        view, _, emb_shape = q_loader.read_raw_slice("model.embed_tokens.weight")
+        rows_u16 = np.ascontiguousarray(np.frombuffer(view, dtype=np.uint16).reshape(emb_shape)[ids_np])
+        bytes_read += rows_u16.nbytes
+        hidden = mx.array(rows_u16).view(mx.bfloat16).astype(mx.float32)
+
+        te_shell = TextEncoder(num_hidden_layers=1)
+        te_shell.embed_tokens = None
+        single_layer = te_shell.layers[0]
+        pos_emb = te_shell.rotary_emb(hidden, mx.broadcast_to(mx.arange(512, dtype=mx.int32)[None, :], (1, 512)))
+        causal_mask = TextEncoder._get_causal_mask(mask_mx, 1, hidden, 512)
+        mx.eval(hidden, causal_mask)
+
+        l_keys = [k for k, _ in tree_flatten(single_layer.parameters())]
+        for l_idx in range(35):
+            leaves = []
+            for pk in l_keys:
+                st_k = f"model.layers.{l_idx}.{pk}"
+                bytes_read += q_loader.get_tensor_byte_size(st_k)
+                leaves.append((pk, q_loader.read_mlx_array(st_k, target_dtype=mx.bfloat16)))
+            single_layer.update(tree_unflatten(leaves))
+            mx.eval(single_layer.parameters())
+            del leaves
+            hidden = single_layer(hidden_states=hidden, attention_mask=causal_mask, position_embeddings=pos_emb)
+            mx.eval(hidden)
+            single_layer.update(tree_unflatten([(pk, mx.zeros((0,), dtype=mx.bfloat16)) for pk in l_keys]))
+            mx.eval(single_layer.parameters())
+            if hasattr(mx, "clear_cache"):
+                mx.clear_cache()
+
+        cap_feats = hidden[0, :num_valid, :].astype(mx.bfloat16)
+        mx.eval(cap_feats)
+        del te_shell, single_layer, hidden, causal_mask, pos_emb, mask_mx
+    _flush_metal()
+    return cap_feats, bytes_read
+
+
 def generate_zimage_mlx(
     prompt: str,
     qwen_path: Union[str, Path],
@@ -73,12 +122,16 @@ def generate_zimage_mlx(
     steps: int = 8,
     seed: int = 42,
     mode: str = "stage_offload",
+    hybrid_budget_mb: float = 6144.0,
+    cache_rel_l1_thresh: float = 0.0,
+    cache_warmup_steps: int = 2,
+    cache_max_consecutive_skips: int = 2,
     verbose: bool = True,
 ) -> MLXGenerationResult:
-    """Execute Z-Image-Turbo on Apple Metal in `monolithic`, `stage_offload`, `q4_stage_offload`, or `block_stream` mode."""
+    """Execute Z-Image-Turbo on Apple Metal across `monolithic`, `stage_offload`, `q4_stage_offload`, `block_stream`, or `hybrid_stream`."""
     import mlx.core as mx
     import mlx.nn as nn
-    from mlx.utils import tree_flatten, tree_unflatten
+    from mlx.utils import tree_unflatten
     from mflux.models.common.config.config import Config
     from mflux.models.common.config.model_config import ModelConfig
     from mflux.models.z_image.latent_creator import ZImageLatentCreator
@@ -89,6 +142,8 @@ def generate_zimage_mlx(
     mx.reset_peak_memory()
     t_total0 = time.perf_counter()
     bytes_streamed = 0
+    resident_blocks = 0
+    skipped_steps = 0
     cfg = Config(
         width=width,
         height=height,
@@ -110,6 +165,7 @@ def generate_zimage_mlx(
         vae = load_mlx_flux_vae(vae_path, low_memory=False)
         active_res_mb = float(mx.get_active_memory()) / (1024.0 * 1024.0)
         t_load = time.perf_counter() - t0
+        resident_blocks = 34
 
         t_e0 = time.perf_counter()
         cap_feats = te(mx.array(ids_np), mask_mx)[0, :num_valid, :].astype(mx.bfloat16)
@@ -153,6 +209,7 @@ def generate_zimage_mlx(
         tr, fast_nr, fast_cr, fast_ly = map_zimage_transformer(dit_path, quantize_bits=q_bits, fuse_blocks=(q_bits is None))
         t_load = time.perf_counter() - t_l0
         active_res_mb = float(mx.get_active_memory()) / (1024.0 * 1024.0)
+        resident_blocks = 34
 
         latents = ZImageLatentCreator.create_noise(seed=seed, height=height, width=width)
         mx.eval(latents, cfg.scheduler.sigmas)
@@ -207,47 +264,13 @@ def generate_zimage_mlx(
         t_vae = time.perf_counter() - t_v0
         peak_mb = float(mx.get_peak_memory()) / (1024.0 * 1024.0)
 
-    elif mode == "block_stream":
-        t_load = 0.0
+    elif mode in ("block_stream", "hybrid_stream"):
         t_e0 = time.perf_counter()
-        ids_np, mask_mx, num_valid = _tokenize_qwen_prompt(prompt, tokenizer_dir)
-        with MMapTensorLoader(Path(qwen_path)) as q_loader:
-            view, _, emb_shape = q_loader.read_raw_slice("model.embed_tokens.weight")
-            rows_u16 = np.ascontiguousarray(np.frombuffer(view, dtype=np.uint16).reshape(emb_shape)[ids_np])
-            bytes_streamed += rows_u16.nbytes
-            hidden = mx.array(rows_u16).view(mx.bfloat16).astype(mx.float32)
-
-            te_shell = TextEncoder(num_hidden_layers=1)
-            te_shell.embed_tokens = None
-            single_layer = te_shell.layers[0]
-            pos_emb = te_shell.rotary_emb(hidden, mx.broadcast_to(mx.arange(512, dtype=mx.int32)[None, :], (1, 512)))
-            causal_mask = TextEncoder._get_causal_mask(mask_mx, 1, hidden, 512)
-            mx.eval(hidden, causal_mask)
-
-            l_keys = [k for k, _ in tree_flatten(single_layer.parameters())]
-            for l_idx in range(35):
-                leaves = []
-                for pk in l_keys:
-                    st_k = f"model.layers.{l_idx}.{pk}"
-                    bytes_streamed += q_loader.get_tensor_byte_size(st_k)
-                    leaves.append((pk, q_loader.read_mlx_array(st_k, target_dtype=mx.bfloat16)))
-                single_layer.update(tree_unflatten(leaves))
-                mx.eval(single_layer.parameters())
-                del leaves
-                hidden = single_layer(hidden_states=hidden, attention_mask=causal_mask, position_embeddings=pos_emb)
-                mx.eval(hidden)
-                single_layer.update(tree_unflatten([(pk, mx.zeros((0,), dtype=mx.bfloat16)) for pk in l_keys]))
-                mx.eval(single_layer.parameters())
-                if hasattr(mx, "clear_cache"):
-                    mx.clear_cache()
-
-            cap_feats = hidden[0, :num_valid, :].astype(mx.bfloat16)
-            mx.eval(cap_feats)
-            del te_shell, single_layer, hidden, causal_mask, pos_emb, mask_mx
-        _flush_metal()
+        cap_feats, br_q = _stream_qwen_text_encode(prompt, qwen_path, tokenizer_dir)
+        bytes_streamed += br_q
         t_enc = time.perf_counter() - t_e0
 
-        t_d0 = time.perf_counter()
+        t_l0 = time.perf_counter()
         with MMapTensorLoader(Path(dit_path)) as dit_loader:
             stem = ZImageTransformer(n_layers=0, n_refiner_layers=0)
             stem.set_float32(False)
@@ -269,10 +292,38 @@ def generate_zimage_mlx(
                 ("cap_pad_token", "cap_pad_token"),
             ]
             stem.update(tree_unflatten([(dk, dit_loader.read_mlx_array(sk, target_dtype=mx.bfloat16)) for dk, sk in stem_map]))
-            bytes_streamed += sum(dit_loader.get_tensor_byte_size(sk) for _, sk in stem_map)
+            stem_bytes = sum(dit_loader.get_tensor_byte_size(sk) for _, sk in stem_map)
+            bytes_streamed += stem_bytes
             mx.eval(stem.parameters())
-            active_res_mb = float(mx.get_active_memory()) / (1024.0 * 1024.0)
 
+            # Optional Hybrid Unified-Memory Residency (`mode == "hybrid_stream"`):
+            # Reserve ~1,024 MB for Metal activations + 1 streamed block scratch, then pin pre-fused
+            # `noise_refiner` + leading `layers` up to `hybrid_budget_mb` without ever loading full 11 GB!
+            res_nr: Dict[int, dict] = {}
+            res_ly: Dict[int, dict] = {}
+            if mode == "hybrid_stream" and hybrid_budget_mb > 0.0:
+                usable_bytes = max(0, int((hybrid_budget_mb - 1024.0) * 1024.0 * 1024.0) - stem_bytes)
+                used_bytes = 0
+                for nr_i in range(2):
+                    if used_bytes + 370 * 1024 * 1024 <= usable_bytes:
+                        blk_d, b_ld = load_resident_fused_zimage_block(dit_loader, f"noise_refiner.{nr_i}", True)
+                        res_nr[nr_i] = blk_d
+                        used_bytes += b_ld
+                        bytes_streamed += b_ld
+                for ly_i in range(30):
+                    if used_bytes + 370 * 1024 * 1024 <= usable_bytes:
+                        blk_d, b_ld = load_resident_fused_zimage_block(dit_loader, f"layers.{ly_i}", True)
+                        res_ly[ly_i] = blk_d
+                        used_bytes += b_ld
+                        bytes_streamed += b_ld
+                    else:
+                        break
+                resident_blocks = len(res_nr) + len(res_ly)
+
+            active_res_mb = float(mx.get_active_memory()) / (1024.0 * 1024.0)
+            t_load = time.perf_counter() - t_l0
+
+            t_d0 = time.perf_counter()
             latents = ZImageLatentCreator.create_noise(seed=seed, height=height, width=width)
             mx.eval(latents, cfg.scheduler.sigmas)
             key = f"{stem.patch_size}-{stem.f_patch_size}"
@@ -290,6 +341,13 @@ def generate_zimage_mlx(
             F_t, H_t, W_t = F // pF, H // pH, W // pW
             ori_len, pad_len = F_t * H_t * W_t, (-(F_t * H_t * W_t)) % 32
 
+            prev_delta_0: Optional[Any] = None
+            cached_layers_res: Optional[Any] = None
+            accum_rel_diff = 0.0
+            consec_skips = 0
+            warmup = max(1, int(cache_warmup_steps))
+            max_skips = max(1, int(cache_max_consecutive_skips))
+
             for s_i, t in enumerate(cfg.time_steps):
                 ts0 = time.perf_counter()
                 sig = cfg.scheduler.sigmas[t].reshape((1,))
@@ -299,24 +357,79 @@ def generate_zimage_mlx(
                     flat = mx.concatenate([flat, mx.repeat(flat[-1:], pad_len, axis=0)], axis=0)
                 x_emb = mx.expand_dims(mx.where(x_pm[:, None], stem.x_pad_token, stem.all_x_embedder[key](flat)), axis=0)
                 for nr_i in range(2):
-                    x_emb, br = stream_single_zimage_block_mmap(dit_loader, f"noise_refiner.{nr_i}", x_emb, x_fq, t_emb, True)
-                    bytes_streamed += br
+                    if nr_i in res_nr:
+                        x_emb = exec_resident_fused_zimage_block(res_nr[nr_i], x_emb, x_fq, t_emb)
+                    else:
+                        x_emb, br = stream_single_zimage_block_mmap(dit_loader, f"noise_refiner.{nr_i}", x_emb, x_fq, t_emb, True)
+                        bytes_streamed += br
+
                 x_len = x_emb.shape[1]
-                uni = mx.concatenate([x_emb, c_emb], axis=1)
-                for ly_i in range(30):
-                    uni, br = stream_single_zimage_block_mmap(dit_loader, f"layers.{ly_i}", uni, u_fq, t_emb, True)
+                uni_in = mx.concatenate([x_emb, c_emb], axis=1)
+                if 0 in res_ly:
+                    uni_0 = exec_resident_fused_zimage_block(res_ly[0], uni_in, u_fq, t_emb)
+                else:
+                    uni_0, br = stream_single_zimage_block_mmap(dit_loader, "layers.0", uni_in, u_fq, t_emb, True)
                     bytes_streamed += br
+
+                did_skip = False
+                step_rel_diff: Optional[float] = None
+                if cache_rel_l1_thresh > 0.0:
+                    delta_0 = uni_0 - uni_in
+                    mx.eval(delta_0)
+                    del uni_in
+                    if prev_delta_0 is not None:
+                        denom = float(mx.mean(mx.abs(prev_delta_0.astype(mx.float32))).item()) + 1e-6
+                        step_rel_diff = float(mx.mean(mx.abs((delta_0 - prev_delta_0).astype(mx.float32))).item()) / denom
+                    if (
+                        (s_i + 1) > warmup
+                        and step_rel_diff is not None
+                        and cached_layers_res is not None
+                        and consec_skips < max_skips
+                        and (accum_rel_diff + step_rel_diff) < cache_rel_l1_thresh
+                    ):
+                        accum_rel_diff += step_rel_diff
+                        consec_skips += 1
+                        skipped_steps += 1
+                        uni = (uni_0 + cached_layers_res).astype(uni_0.dtype)
+                        mx.eval(uni)
+                        did_skip = True
+
+                    if not did_skip:
+                        uni = uni_0
+                        for ly_i in range(1, 30):
+                            if ly_i in res_ly:
+                                uni = exec_resident_fused_zimage_block(res_ly[ly_i], uni, u_fq, t_emb)
+                            else:
+                                uni, br = stream_single_zimage_block_mmap(dit_loader, f"layers.{ly_i}", uni, u_fq, t_emb, True)
+                                bytes_streamed += br
+                        cached_layers_res = uni - uni_0
+                        mx.eval(cached_layers_res)
+                        prev_delta_0 = delta_0
+                        accum_rel_diff = 0.0
+                        consec_skips = 0
+                else:
+                    del uni_in
+                    uni = uni_0
+                    for ly_i in range(1, 30):
+                        if ly_i in res_ly:
+                            uni = exec_resident_fused_zimage_block(res_ly[ly_i], uni, u_fq, t_emb)
+                        else:
+                            uni, br = stream_single_zimage_block_mmap(dit_loader, f"layers.{ly_i}", uni, u_fq, t_emb, True)
+                            bytes_streamed += br
+
                 noise = -ZImageTransformer._unpatchify(stem.all_final_layer[key](uni, t_emb)[0, :x_len], x_sz, pH, pF, stem.out_channels)
                 latents = cfg.scheduler.step(noise=noise, timestep=t, latents=latents)
                 mx.eval(latents)
                 if verbose:
                     act_mb = float(mx.get_active_memory()) / (1024.0 * 1024.0)
                     pk_mb = float(mx.get_peak_memory()) / (1024.0 * 1024.0)
-                    print(f"    [block_stream step {s_i+1}/{steps}] {time.perf_counter()-ts0:.2f}s | Active Metal: {act_mb:.1f} MB | Peak Metal: {pk_mb:.1f} MB", flush=True)
+                    tag = "SKIP" if did_skip else "FULL"
+                    rd_str = f" | rel_l1={step_rel_diff:.3f}" if step_rel_diff is not None else ""
+                    print(f"    [{mode} step {s_i+1}/{steps} {tag}] {time.perf_counter()-ts0:.2f}s | Active: {act_mb:.1f} MB | Peak: {pk_mb:.1f} MB{rd_str}", flush=True)
 
             unpacked = ZImageLatentCreator.unpack_latents(latents, height, width)
             mx.eval(unpacked)
-            del stem, c_emb, cap_feats, latents
+            del stem, res_nr, res_ly, prev_delta_0, cached_layers_res, c_emb, cap_feats, latents
         _flush_metal()
         t_den = time.perf_counter() - t_d0
 
@@ -344,4 +457,6 @@ def generate_zimage_mlx(
         active_resident_mb=round(active_res_mb, 1),
         peak_rss_mb=round(_rss_mb(), 1),
         streamed_gb=round(bytes_streamed / (1024.0 ** 3), 2),
+        resident_blocks=resident_blocks,
+        skipped_steps=skipped_steps,
     )

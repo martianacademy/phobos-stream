@@ -17,6 +17,7 @@ from phobos_stream.streaming.block_discovery import (
     lookup_safetensors_key,
     move_non_persistent_buffers,
 )
+from phobos_stream.streaming.attention_fastpath import PhobosAttentionFastpath
 from phobos_stream.streaming.budget_planner import BlockTier, HybridBudgetPlan, MemoryBudgetPlanner
 from phobos_stream.streaming.first_block_cache import FirstBlockResidualCache
 
@@ -48,6 +49,8 @@ class TorchBlockStreamer:
         cache_rel_l1_thresh: float = 0.0,
         cache_warmup_steps: int = 2,
         cache_max_consecutive_skips: int = 3,
+        attn_mode: str = "stock",
+        attn_chunk_size: int = 8192,
     ) -> None:
         import torch
 
@@ -78,6 +81,11 @@ class TorchBlockStreamer:
                 max_consecutive_skips=cache_max_consecutive_skips,
             )
             if cache_rel_l1_thresh > 0.0
+            else None
+        )
+        self.attn_fastpath: Optional[PhobosAttentionFastpath] = (
+            PhobosAttentionFastpath(mode=attn_mode, query_chunk_size=attn_chunk_size)
+            if attn_mode != "stock"
             else None
         )
 
@@ -171,16 +179,16 @@ class TorchBlockStreamer:
 
             self._configure_block_tiers(tiers, st_index)
             if self.residual_cache is not None and self.residual_cache.enabled:
-                first_post0_cpu = next(
-                    (i for i, t in enumerate(self._effective_tiers) if i >= 1 and t == BlockTier.CPU_PINNED),
+                self.residual_cache.attach(self.model, blocks=self.blocks)
+                p_idx = self.residual_cache.probe_block_index
+                first_post_probe_cpu = next(
+                    (i for i, t in enumerate(self._effective_tiers) if i > p_idx and t == BlockTier.CPU_PINNED),
                     None,
                 )
-                miss_cb = (
-                    (lambda: self._prefetch_cpu_block(first_post0_cpu))
-                    if (first_post0_cpu is not None and self._prefetch_stream is not None)
-                    else None
-                )
-                self.residual_cache.attach(self.model, blocks=self.blocks, on_miss_callback=miss_cb)
+                if first_post_probe_cpu is not None and self._prefetch_stream is not None:
+                    self.residual_cache._on_miss_callback = lambda: self._prefetch_cpu_block(first_post_probe_cpu)
+            if self.attn_fastpath is not None:
+                self.attn_fastpath.activate()
         except Exception:
             for loader in self._loaders:
                 loader.close()
@@ -329,9 +337,16 @@ class TorchBlockStreamer:
                 self._mmap_map[idx] = blk_entries
                 self._register_mmap_hooks(idx, blk)
 
+    def _is_skipped_by_cache(self, idx: int) -> bool:
+        return (
+            self.residual_cache is not None
+            and self.residual_cache.skip_active
+            and idx > self.residual_cache.probe_block_index
+        )
+
     def _make_gpu_resident_hook(self, idx: int = 0) -> Any:
         def _post(_mod: Any, _inp: Any, _out: Any) -> None:
-            if idx > 0 and self.residual_cache is not None and self.residual_cache.skip_active:
+            if self._is_skipped_by_cache(idx):
                 return
             self.blocks_executed += 1
 
@@ -352,7 +367,7 @@ class TorchBlockStreamer:
         import torch
 
         def _pre_hook(module: Any, inputs: Any, kwargs: Optional[Dict[str, Any]] = None) -> None:
-            if idx > 0 and self.residual_cache is not None and self.residual_cache.skip_active:
+            if self._is_skipped_by_cache(idx):
                 return
             target_dev = self._resolve_active_device(inputs, kwargs)
             if self._auto_device:
@@ -380,12 +395,17 @@ class TorchBlockStreamer:
                 self.bytes_streamed += dev_t.numel() * dev_t.element_size()
 
             if self._prefetch_stream is not None and target_dev == self.compute_device:
-                # Hold block-0 prefetch when residual cache is active until block-0 declares a miss.
-                if not (idx == 0 and self.residual_cache is not None and self.residual_cache.enabled):
+                # Hold probe-block prefetch when residual cache is active until probe declares a miss.
+                is_probe = (
+                    self.residual_cache is not None
+                    and self.residual_cache.enabled
+                    and idx == self.residual_cache.probe_block_index
+                )
+                if not is_probe:
                     self._prefetch_cpu_block(next_peer_idx)
 
         def _post_hook(module: Any, _inputs: Any, _output: Any) -> None:
-            if idx > 0 and self.residual_cache is not None and self.residual_cache.skip_active:
+            if self._is_skipped_by_cache(idx):
                 return
             for rel_name, is_param, cpu_t in self._cpu_shadow[idx]:
                 assign_tensor(module, rel_name, cpu_t, is_param)
@@ -405,7 +425,7 @@ class TorchBlockStreamer:
         import torch
 
         def _pre_hook(module: Any, inputs: Any, kwargs: Optional[Dict[str, Any]] = None) -> None:
-            if idx > 0 and self.residual_cache is not None and self.residual_cache.skip_active:
+            if self._is_skipped_by_cache(idx):
                 return
             target_dev = self._resolve_active_device(inputs, kwargs)
             if self._auto_device:
@@ -416,7 +436,7 @@ class TorchBlockStreamer:
                 self.bytes_streamed += loader.get_tensor_byte_size(real_key)
 
         def _post_hook(module: Any, _inputs: Any, _output: Any) -> None:
-            if idx > 0 and self.residual_cache is not None and self.residual_cache.skip_active:
+            if self._is_skipped_by_cache(idx):
                 return
             for rel_name, is_param, _, _, orig_dtype in self._mmap_map[idx]:
                 assign_tensor(module, rel_name, torch.empty(0, dtype=orig_dtype, device="cpu"), is_param)
@@ -430,6 +450,8 @@ class TorchBlockStreamer:
 
     def detach(self, restore_cpu_weights: bool = True) -> None:
         """Remove all forward hooks, restore CPU shadow weights if applicable, and close mmaps."""
+        if self.attn_fastpath is not None:
+            self.attn_fastpath.deactivate()
         if self.residual_cache is not None:
             self.residual_cache.detach()
         for h in self._hooks:

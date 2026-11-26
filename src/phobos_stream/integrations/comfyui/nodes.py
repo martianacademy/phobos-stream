@@ -141,6 +141,8 @@ class PhobosBlockStreamPatcherNode:
                 "cache_rel_l1_thresh": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "cache_warmup_steps": ("INT", {"default": 2, "min": 1, "max": 20}),
                 "cache_max_consecutive_skips": ("INT", {"default": 3, "min": 1, "max": 10}),
+                "attn_mode": (["auto", "chunked_sdpa", "stock"], {"default": "auto"}),
+                "attn_chunk_size": ("INT", {"default": 8192, "min": 1024, "max": 65536, "step": 1024}),
             },
         }
 
@@ -158,6 +160,8 @@ class PhobosBlockStreamPatcherNode:
         cache_rel_l1_thresh: float = 0.0,
         cache_warmup_steps: int = 2,
         cache_max_consecutive_skips: int = 3,
+        attn_mode: str = "auto",
+        attn_chunk_size: int = 8192,
     ) -> Tuple[Any]:
         patched = model.clone() if hasattr(model, "clone") else model
         streamer = attach_streamer_to_comfy_model(
@@ -168,6 +172,8 @@ class PhobosBlockStreamPatcherNode:
             cache_rel_l1_thresh=cache_rel_l1_thresh,
             cache_warmup_steps=cache_warmup_steps,
             cache_max_consecutive_skips=cache_max_consecutive_skips,
+            attn_mode=attn_mode,
+            attn_chunk_size=attn_chunk_size,
         )
         setattr(patched, "_phobos_block_streamer", streamer)
         return (patched,)

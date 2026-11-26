@@ -73,3 +73,36 @@ def test_video_generation_endpoint_produces_real_mp4(client: TestClient) -> None
     vid_res = client.get(data["video_url"])
     assert vid_res.status_code == 200
     assert b"ftyp" in vid_res.content[:32]
+
+
+def test_server_accepts_cache_rel_l1_thresh_and_reports_skipped_steps(tmp_path: Path) -> None:
+    manifest = ModelShardsManifest(
+        model_name="test-server-fbcache",
+        architecture="wan2.1",
+        num_blocks=2,
+        hidden_size=64,
+        allow_synthetic=True,
+    )
+    app = create_app(
+        manifest=manifest,
+        backend_type=BackendType.CPU,
+        output_dir=tmp_path,
+        cache_rel_l1_thresh=0.12,
+    )
+    tc = TestClient(app)
+    res = tc.post(
+        "/v1/videos/generations",
+        json={
+            "prompt": "Martian rover dust storm",
+            "model": "wan2.1",
+            "height": 128,
+            "width": 128,
+            "num_frames": 5,
+            "steps": 2,
+            "cache_rel_l1_thresh": 0.15,
+        },
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "completed"
+    assert "skipped_steps" in body

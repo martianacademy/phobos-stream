@@ -1,7 +1,7 @@
 # <img src="https://raw.githubusercontent.com/martianacademy/phobos-stream/main/assets/icon.png" width="42" align="top" alt="PhobosStream Icon" /> PhobosStream
 
 [![PyPI Version](https://img.shields.io/pypi/v/phobos-stream?color=EE6A3E&label=PyPI)](https://pypi.org/project/phobos-stream/)
-[![Comfy Registry](https://img.shields.io/badge/Comfy_Registry-v0.4.0-EE6A3E)](https://registry.comfy.org/publishers/martianacademy/nodes/comfyui-phobosstream)
+[![Comfy Registry](https://img.shields.io/badge/Comfy_Registry-v0.5.0-EE6A3E)](https://registry.comfy.org/publishers/martianacademy/nodes/comfyui-phobosstream)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/martianacademy/phobos-stream/blob/main/notebooks/MiniMax_H3_Free_T4_PhobosStream.ipynb)
 [![CI Tests](https://github.com/martianacademy/phobos-stream/actions/workflows/ci.yml/badge.svg)](https://github.com/martianacademy/phobos-stream/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://www.python.org/)
@@ -56,6 +56,17 @@ By combining **3-Stage Sequential Offloading** (`Text Encoder -> DiT -> Tiled VA
 
 > **Startup Note:** One-time 4-thread parallel `pin_memory` setup takes `patch_sec ≈ 8.0s` (`load 9.1s + patch 8.1s = 17.2s` total vs ComfyUI's `30.4s` cold load). On cache-hit steps, `FirstBlockResidualCache` skips both compute and PCIe DMA for all 39 remaining blocks (`0.4s`/step vs `15.0s`/step, cutting total PCIe bytes streamed from `160.9 GB` down to `82.4 GB`).
 
+*0d. **Dual-Stream MMDiT Benchmark: Full `25.64 GB` BF16 `HunyuanVideo-13B` (`2 txt_in + 20 double_blocks + 40 single_blocks = 62` blocks, `640×368` × `17` frames × `12` steps) under an enforced `24.0 GiB` RTX 3090 / 4090 VRAM Cap (`torch 2.11.0+cu128`):** (`outputs/modal_hunyuan_mmdit_bench/hunyuan13b_bf16_mmdit_report.json`)*
+
+| Engine / Mode (`24.0 GiB` Cap) | Block Residency (`GPU / CPU`) | Peak CUDA VRAM | VRAM vs `25.64 GB` Model | 12-Step Time (`sec/step`) | Speedup vs Lossless | Latent Fidelity (`PSNR / Cosine Sim`) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Stock `--highvram` / ComfyUI `--lowvram`** | Materialize on GPU | ❌ **`> 24,534.5 MB` (`CUDA OOM`)** | Exceeds `24 GiB` | — | — | Crashes (`24.48 GiB` > `24.00 GiB`) |
+| **`PhobosBlockStreamPatcher` (`cpu_offload`, Lossless)** | **`0 / 62`** *(Pinned Async)* | **`1,807.1 MB` (`1.76 GiB`)** | **`-92.8%`** | **`12.12 s` (`1.01 s`)** | `1.00×` | **`0.0` Bit-Exact (`99.99 dB` / `1.0000`)** |
+| **`PhobosBlockStreamPatcher` + MMDiT FBCache (`0.12`)** | **`0 / 62`** *(3/12 steps skipped)* | **`1,861.5 MB` (`1.82 GiB`)** | **`-92.6%`** | **`10.45 s` (`0.87 s`)** | **`1.16×` faster** | **`36.85 dB` PSNR (`0.9950` cos)** |
+| **`PhobosBlockStreamPatcher` + MMDiT FBCache (`0.18`)** | **`0 / 62`** *(5/12 steps skipped)* | **`1,861.5 MB` (`1.82 GiB`)** | **`-92.6%`** | **`7.92 s` (`0.66 s`)** | **`1.53×` faster** | **`28.05 dB` PSNR (`0.9616` cos)** |
+
+> **Long-Sequence Attention Note:** `PhobosAttentionFastpath` (`attention_mode="auto"`) automatically enables `<SM80` BF16→FP16 fused SDPA (`-1.11 GiB` VRAM on Turing) and lossless query-chunked SDPA (`0.0` max abs diff) on non-Flash devices, running `49`-frame `Wan2.1-14B` (`20,280` tokens) in **`3,863.3 MB` (`3.77 GiB`) Peak VRAM** with **`99.99 dB` PSNR**.
+
 *1. **Real `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` (~14.5 GB BF16: `UMT5-XXL` + 30-block `WanDiT` + 3D `WanVAE`)** under an enforced **`8.00 GiB` CUDA VRAM limit** (`torch.cuda.set_per_process_memory_fraction`, native widescreen **`832×480`**, `25 frames`, `40 steps`, `flow_shift=3.0` via standalone FastAPI `/v1/videos/generations`):*
 
 | Pipeline Configuration | Enforced CUDA Cap | Peak CUDA VRAM | Wall Time (Tesla T4, 40 Steps) | Result |
@@ -82,6 +93,10 @@ By combining **3-Stage Sequential Offloading** (`Text Encoder -> DiT -> Tiled VA
 | **2. Phobos 3-Stage Offload (BF16)** | **12,906.4 MB** | **`51.2%`** | 11,742.5 MB | `44.14 s` (`5.52 s`) | `46.99 s` | Lossless BF16 (`32.68 dB` PSNR vs non-strip VAE) |
 | **3. Phobos 3-Stage + Q4 Quantized** | **4,814.7 MB** | **`81.8%`** | 3,310.4 MB | `66.89 s` (`8.36 s`) | `69.72 s` | 4-bit Quantized (`19.25 dB` PSNR) |
 | **4. Phobos Zero-VRAM Block-Stream (Full BF16)** | **1,601.0 MB** *(DiT: **1,248.2 MB**)* | **`93.9%`** *(DiT: **95.3%**)* | **23.2 MB** (`91.6 MB` active) | `71.45 s` (`8.93 s`) | `75.04 s` | **Bit-Exact BF16 (`0.0000 px` diff vs Stage-Offload)** |
+| **5. Phobos `hybrid_stream` (`6 GB` Budget — 16 GB Mac)** | **6,068.5 MB** | **`77.1%`** | 4,882.3 MB (`14/32` blocks) | **`50.69 s` (`6.34 s`)** | `54.05 s`–`68.20 s`* | **BF16 (`38.00 dB` vs Block-Stream — `+13.1 dB` over Q4!)** |
+| **6. Phobos `hybrid_stream` (`8 GB` Budget — 16/24 GB Mac)** | **8,138.8 MB** | **`69.2%`** | 6,924.5 MB (`20/32` blocks) | **`49.57 s` (`6.20 s`)** | **`54.60 s` (`1.37×` faster)** | **BF16 (`38.18 dB` vs Block-Stream, `-50.4%` SSD reads)** |
+
+*\*`68.20 s` on cold SSD page-cache (`50.69 s` denoise = `1.41×` faster than `block_stream`); `54.05 s` (`1.39×` faster, `28.89 dB` PSNR) with warm cache + `First-Block Cache (0.25)` (`outputs/mlx_hybrid_bench/mlx_zimage_hybrid_report.json`).*
 
 ### Key Architectural Mechanisms
 1. **Native BF16/FP16 Zero-Copy `mmap` (`MMapTensorLoader`)**: Slices tensor byte-ranges directly from `.safetensors` on NVMe SSD into native `torch.bfloat16` (`read_torch_tensor`) and `mlx.core.bfloat16` (`read_mlx_array`) without expanding weights to FP32 in host RAM.
@@ -157,11 +172,12 @@ with TorchBlockStreamer(
 ### 3. CLI & OpenAI / Sora-Compatible Video & Image API Gateway
 
 ```bash
-# Launch standalone Diffusers video/image server under a strict 3-tier VRAM/RAM budget (runs Wan2.1 in ~4.3 GiB VRAM!):
+# Launch standalone Diffusers video/image server under a strict 3-tier VRAM/RAM budget + Zero-DMA TeaCache:
 phobos-stream serve --port 8088 \
   --hf-model Wan-AI/Wan2.1-T2V-1.3B-Diffusers \
   --stream-mode hybrid_budget \
-  --vram-budget-mb 3200
+  --vram-budget-mb 3200 \
+  --cache-thresh 0.12
 
 # Or index a local .safetensors checkpoint directory into a zero-copy virtual manifest:
 phobos-stream shard --model-dir /path/to/models --architecture wan2.1
