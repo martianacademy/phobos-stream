@@ -1,7 +1,7 @@
 # <img src="https://raw.githubusercontent.com/martianacademy/phobos-stream/main/assets/icon.png" width="42" align="top" alt="PhobosStream Icon" /> PhobosStream
 
 [![PyPI Version](https://img.shields.io/pypi/v/phobos-stream?color=EE6A3E&label=PyPI)](https://pypi.org/project/phobos-stream/)
-[![Comfy Registry](https://img.shields.io/badge/Comfy_Registry-v0.3.0-EE6A3E)](https://registry.comfy.org/publishers/martianacademy/nodes/comfyui-phobosstream)
+[![Comfy Registry](https://img.shields.io/badge/Comfy_Registry-v0.3.1-EE6A3E)](https://registry.comfy.org/publishers/martianacademy/nodes/comfyui-phobosstream)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/martianacademy/phobos-stream/blob/main/notebooks/MiniMax_H3_Free_T4_PhobosStream.ipynb)
 [![CI Tests](https://github.com/martianacademy/phobos-stream/actions/workflows/ci.yml/badge.svg)](https://github.com/martianacademy/phobos-stream/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://www.python.org/)
@@ -33,7 +33,17 @@ By combining **3-Stage Sequential Offloading** (`Text Encoder -> DiT -> Tiled VA
 | **Stage 3B: BigVGAN `32 kHz` Stereo Audio VAE (5.88s)** | ❌ **`> 14,560 MB` (`CUDA OOM`)** | ✅ **`618.4 MB` Peak VRAM** (stereo `RMS 0.138`) | `8.15 s` | **`95.7%`** |
 | **Total End-to-End (`5.88s` H.264 + AAC Stereo `.mp4`)** | ❌ **Crashes (OOM)** | ✅ **Valid `2.7 MB` MP4** | **`1,531.59 s` (`25m 32s`)** | **Fits Free Colab** |
 
-> **Honest Latency Note:** End-to-end generation took **`25m 32s`** on a **free 2018 Tesla T4 (SM75, no BF16/FP8 Tensor Cores or FlashAttention-2) with only `12 GiB` host RAM (`0 B` swap)** — ~75% (`19m 01s`) was Stage 2 Turing compute + disk page-cache reloading because the 16 GB model exceeded the 12 GB host RAM ceiling. Stage 3A (`5m 08s`) used conservative 1-block-at-a-time streaming (`466.8 MB` VRAM); keeping blocks GPU-resident via `HYBRID_BUDGET` on GPUs with headroom eliminates most of that VAE transfer time.
+> **Honest Latency Note:** End-to-end generation took **`25m 32s`** on a **free 2018 Tesla T4 (SM75, no BF16/FP8 Tensor Cores or FlashAttention-2) with only `12 GiB` host RAM (`0 B` swap)** — ~75% (`19m 01s`) was Stage 2 Turing compute + disk page-cache reloading because the 16 GB model exceeded the 12 GB host RAM ceiling.
+
+*0b. **Isolated `PhobosVAEStreamPatcher` (`v0.3.1`) Ablation on NVIDIA Tesla T4 (`14.58 GiB` VRAM, `16 GiB` RAM, `torch 2.11.0+cu128`, real `4.85 GB` 36-block `MiniMaxH3VideoVAE` `141` frames @ `736×416` + `0.56 GB` `32 kHz` Stereo BigVGAN Audio VAE):** (`outputs/modal_t4_vae_bench/minimax_h3_vae_benchmark_report.json`)*
+
+| VAE Configuration | Block Split (`GPU / CPU`) | Peak CUDA VRAM | VRAM Saved | Wall Time | Speedup vs `cpu_offload` | Fidelity (`Max Abs Diff`) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Stock Monolithic `MiniMaxH3VideoVAE`** | All on GPU | ❌ **`> 14,300.8 MB` (`CUDA OOM`)** | — | — | — | Crashes (`14.52 GiB` in use) |
+| **`PhobosVAEStreamPatcher (cpu_offload)`** | `0 / 36` | **`469.7 MB`** | **`96.8%`** | **`51.10 s`** | `1.00×` | **`0.0` (Reference)** |
+| **`PhobosVAEStreamPatcher (hybrid_budget 3 GB)`** | **`21 / 15`** | **`3,159.1 MB`** | **`78.3%`** | **`38.37 s`** | **`1.33×` faster** | **`0.0` (Bit-Exact)** |
+| **`PhobosVAEStreamPatcher (hybrid_budget 6 GB)`** | **`36 / 0`** | **`4,822.5 MB`** | **`66.9%`** | **`32.75 s`** | **`1.56×` faster** | **`0.0` (Bit-Exact)** |
+| **`PhobosVAEStreamPatcher` (`32 kHz` Stereo Audio VAE)** | `64`-step overlapped chunks | **`259.6 MB`** | **`98.2%`** | **`1.95 s`** | — | `[1, 2, 188000]` stereo (`RMS 0.110`) |
 
 *1. **Real `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` (~14.5 GB BF16: `UMT5-XXL` + 30-block `WanDiT` + 3D `WanVAE`)** under an enforced **`8.00 GiB` CUDA VRAM limit** (`torch.cuda.set_per_process_memory_fraction`, native widescreen **`832×480`**, `25 frames`, `40 steps`, `flow_shift=3.0` via standalone FastAPI `/v1/videos/generations`):*
 
