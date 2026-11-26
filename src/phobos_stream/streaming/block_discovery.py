@@ -16,6 +16,7 @@ KNOWN_BLOCK_CONTAINERS: Set[str] = {
     "transformer_blocks",
     "noise_refiner",
     "context_refiner",
+    "refiner_blocks",
     "joint_blocks",
     "spatial_blocks",
     "temporal_blocks",

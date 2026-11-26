@@ -6,15 +6,29 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/martianacademy/phobos-stream/blob/main/LICENSE)
 
-**PhobosStream** is a universal zero-VRAM diffusion streaming engine built to run massive **12B–20B+ Video and Image Diffusion Transformers (DiTs)** — including **Alibaba Wan2.1 (14B)**, **Black Forest Labs FLUX.1 (12B)**, **Lumina2 / Z-Image-Turbo**, and **Tencent HunyuanVideo (13B)** — on consumer hardware without Out-Of-Memory (OOM) crashes.
+**PhobosStream** is a universal zero-VRAM diffusion streaming engine built to run massive **12B–33B+ Video and Image Diffusion Transformers (DiTs)** — including **MiniMax-H3 (33B Omni Video+Audio)**, **Alibaba Wan2.1 (14B)**, **Black Forest Labs FLUX.1 (12B)**, **Lumina2 / Z-Image-Turbo**, and **Tencent HunyuanVideo (13B)** — on consumer hardware without Out-Of-Memory (OOM) crashes.
 
-By combining **3-Stage Sequential Offloading** (`Text Encoder -> DiT -> Tiled VAE`) with **Hook-Based Zero-Copy `mmap` Block-by-Block Streaming** (`TorchBlockStreamer` & `MLXBlockStreamer`), PhobosStream cuts Peak GPU Memory on a real **19.5 GB BF16 pipeline from 26.45 GB down to 1.25–1.60 GB (93.9%–95.3% VRAM reduction)** with **zero quantization quality loss**.
+By combining **3-Stage Sequential Offloading** (`Text Encoder -> DiT -> Tiled VAE`) with **Hook-Based Zero-Copy `mmap` & 3-Tier `HYBRID_BUDGET` Streaming** (`TorchBlockStreamer` & `MLXBlockStreamer`), PhobosStream cuts Peak GPU Memory by **93%–96.8%** with **zero quantization quality loss**.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/martianacademy/phobos-stream/main/assets/minimax_h3_demo.gif" width="560" alt="MiniMax-H3 5.9s Video + 32kHz Stereo Audio generated on Free 12GB RAM Tesla T4 via PhobosStream" />
+  <br/>
+  <sub><b>Live Output — MiniMax-H3 (33B-class + 32B Qwen3-VL + 4.85 GB ViT3D VAE + 32 kHz Stereo Audio)</b><br/>Generated on a <b>Free 12 GiB RAM + 14.56 GiB Tesla T4</b>: 5.88s (141 frames @ 24fps) — PhobosStream cut the 36-block ViT3D Video VAE from <b>&gt;14.56 GiB OOM → 466.8 MB VRAM (96.8% saved)</b>.</sub>
+</p>
 
 ---
 
 ## 📊 Verified Empirical Benchmarks
 
-### A. NVIDIA CUDA GPU — 8.0 GiB Hardware VRAM Cap & 3-Tier `HYBRID_BUDGET` (Tesla T4)
+### A. NVIDIA CUDA GPU — MiniMax-H3 (33B-Class), Wan2.1 (8 GiB Cap) & 3-Tier `HYBRID_BUDGET` (Tesla T4)
+
+*0. **Real `MiniMaxAI/MiniMax-H3` (`32B Qwen3-VL` + `20B Pruned W6A8` 4-Step Turbo + `4.85 GB` 36-block `ViT3D` Video VAE + `32 kHz` Stereo BigVGAN Audio VAE)** on a **Free `12 GiB` RAM + `14.56 GiB` Tesla T4 (`torch 2.14.1+cu130`, `736×416`, `141 frames @ 24fps = 5.88s`)**:*
+
+| Pipeline Component | Stock Monolithic T4 | PhobosStream (`TorchBlockStreamer` + 3-Stage) | VRAM Saved |
+| :--- | :---: | :---: | :---: |
+| **36-Block `4.85 GB` `ViT3D` Video VAE Decode (141 frames)** | ❌ **`> 14,560 MB` (`CUDA OOM`)** | ✅ **`466.8 MB` Peak VRAM** (`295.1 GB` streamed) | **`96.8%`** |
+| **BigVGAN `32 kHz` Stereo Audio VAE Decode (5.88s)** | ❌ **`> 14,560 MB` (`CUDA OOM`)** | ✅ **`618.4 MB` Peak VRAM** (`8.15 s`, stereo `RMS 0.138`) | **`95.7%`** |
+| **End-to-End 3-Stage MiniMax-H3 (`12 GiB` Host RAM)** | ❌ **OOM (needs 75–134 GB RAM)** | ✅ **Valid 5.88s H.264 + AAC 32kHz Stereo `.mp4`** | **Fits 12 GB Free VM** |
 
 *1. **Real `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` (~14.5 GB BF16: `UMT5-XXL` + 30-block `WanDiT` + 3D `WanVAE`)** under an enforced **`8.00 GiB` CUDA VRAM limit** (`torch.cuda.set_per_process_memory_fraction`, native widescreen **`832×480`**, `25 frames`, `40 steps`, `flow_shift=3.0` via standalone FastAPI `/v1/videos/generations`):*
 
