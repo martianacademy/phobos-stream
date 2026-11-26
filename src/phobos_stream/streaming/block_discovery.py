@@ -142,7 +142,12 @@ def discover_block_modules(
         if not name or _is_nested(name):
             continue
         leaf_name = name.split(".")[-1]
-        if isinstance(mod, nn.ModuleList) and leaf_name in target_names and len(mod) > 0:
+        if (
+            isinstance(mod, nn.ModuleList)
+            and leaf_name in target_names
+            and len(mod) > 0
+            and not any(isinstance(c, (nn.ModuleList, nn.ModuleDict)) for c in mod)
+        ):
             claimed_prefixes.append(name)
             for idx, child in enumerate(mod):
                 discovered.append((f"{name}.{idx}", child))
@@ -153,7 +158,12 @@ def discover_block_modules(
     for name, mod in root_module.named_modules():
         if not name or _is_nested(name):
             continue
-        if isinstance(mod, nn.ModuleList) and len(mod) >= 2 and len({type(c) for c in mod}) == 1:
+        if (
+            isinstance(mod, nn.ModuleList)
+            and len(mod) >= 2
+            and len({type(c) for c in mod}) == 1
+            and not any(isinstance(c, (nn.ModuleList, nn.ModuleDict)) for c in mod)
+        ):
             claimed_prefixes.append(name)
             for idx, child in enumerate(mod):
                 discovered.append((f"{name}.{idx}", child))

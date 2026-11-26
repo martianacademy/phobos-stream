@@ -224,3 +224,18 @@ def test_audio_vae_4d_stereo_latent_chunking_minimax_h3_shape() -> None:
     assert tuple(out.shape) == (1, 2, 235 * hop)
     assert patched.first_stage_model.calls == 5
     assert torch.allclose(expected, out, atol=1e-5)
+
+
+def test_discover_block_modules_skips_nested_modulelists() -> None:
+    """Nested `nn.ModuleList([nn.ModuleList(...)])` (e.g. BigVGAN `ups`) are uncallable containers."""
+    torch = pytest.importorskip("torch")
+    import torch.nn as nn
+    from phobos_stream.streaming.block_discovery import discover_block_modules
+
+    class _BigVGANStyle(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.ups = nn.ModuleList([nn.ModuleList([nn.Conv1d(4, 4, 1)]) for _ in range(3)])
+
+    discovered = discover_block_modules(_BigVGANStyle())
+    assert discovered == []
