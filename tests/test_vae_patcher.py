@@ -177,3 +177,50 @@ def test_decode_audio_latent_chunked_edge_cases() -> None:
 
     with pytest.raises(ValueError, match="overlap_steps"):
         decode_audio_latent_chunked(lambda x: x, torch.ones(1, 4, 32), chunk_steps=16, overlap_steps=16)
+
+
+def test_audio_vae_4d_stereo_latent_chunking_minimax_h3_shape() -> None:
+    """Regression test for MiniMax-H3 4D stereo audio latents `[B, C, 2, T]`."""
+    torch = pytest.importorskip("torch")
+    import torch.nn as nn
+
+    hop = 8
+
+    class _MockMiniMaxAudioFirstStage(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.proj = nn.Linear(32, 1)
+            self.calls = 0
+
+        def decode(self, z: torch.Tensor) -> torch.Tensor:
+            self.calls += 1
+            # z: [B, 32, 2, t] -> [B, 2, t * hop]
+            reduced = self.proj(z.permute(0, 2, 3, 1)).squeeze(-1)
+            return reduced.repeat_interleave(hop, dim=-1)
+
+    class _MockMiniMaxAudioVAE:
+        def __init__(self) -> None:
+            self.first_stage_model = _MockMiniMaxAudioFirstStage().eval()
+            self.device = torch.device("cpu")
+            self.vae_dtype = torch.float32
+
+        def decode(self, samples: torch.Tensor) -> torch.Tensor:
+            return self.first_stage_model.decode(samples)
+
+    avae = _MockMiniMaxAudioVAE()
+    latent_4d = torch.randn(1, 32, 2, 235)
+    with torch.no_grad():
+        expected = avae.first_stage_model.decode(latent_4d)
+
+    avae.first_stage_model.calls = 0
+    patched, = PhobosVAEStreamPatcherNode().patch_vae(
+        vae=avae,
+        mode="cpu_offload",
+        drop_encoder=True,
+        audio_chunk_steps=64,
+        audio_overlap_steps=8,
+    )
+    out = patched.decode(latent_4d)
+    assert tuple(out.shape) == (1, 2, 235 * hop)
+    assert patched.first_stage_model.calls == 5
+    assert torch.allclose(expected, out, atol=1e-5)

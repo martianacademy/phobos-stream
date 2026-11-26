@@ -89,8 +89,8 @@ def decode_audio_latent_chunked(
     if z.ndim == 2:
         z = z.unsqueeze(0)
         squeezed = True
-    if z.ndim != 3:
-        raise ValueError(f"Expected 3D audio latent [B, C, T], got shape {tuple(z.shape)}.")
+    if z.ndim not in (3, 4):
+        raise ValueError(f"Expected 3D [B, C, T] or 4D [B, C, Ch, T] audio latent, got shape {tuple(z.shape)}.")
 
     total_steps = int(z.shape[-1])
     if total_steps <= chunk_steps:
@@ -248,10 +248,12 @@ def attach_streamer_to_comfy_vae(
         )
         streamer.attach()
 
-        # Keep small decode-path siblings & normalization buffers on compute_device.
-        post_quant = getattr(first_stage, "post_quant_conv", None)
-        if post_quant is not None and hasattr(post_quant, "to"):
-            post_quant.to(device=streamer.compute_device, dtype=vae_dtype if vae_dtype is not None else None)
+        # Keep small decode-path siblings (e.g. `post_quant_conv`, audio stems) & buffers on compute_device.
+        for child_name, child_mod in first_stage.named_children():
+            if child_mod is None or child_mod is target_module or child_name in ("encoder", "quant_conv"):
+                continue
+            if hasattr(child_mod, "to"):
+                child_mod.to(device=streamer.compute_device, dtype=vae_dtype if vae_dtype is not None else None)
         if TORCH_AVAILABLE and torch is not None:
             for buf_name in ("latents_mean", "latents_std", "pixel_mean", "pixel_std"):
                 buf_val = getattr(first_stage, buf_name, None)
@@ -314,18 +316,25 @@ def attach_streamer_to_comfy_vae(
                     return out_cpu.permute(0, 2, 3, 4, 1).clamp(0.0, 1.0)
                 return out_cpu
 
+            is_audio_latent = False
+            if TORCH_AVAILABLE and torch is not None and isinstance(samples_in, torch.Tensor):
+                if samples_in.ndim == 3:
+                    is_audio_latent = True
+                elif samples_in.ndim == 4:
+                    cls_hint = f"{type(comfy_vae).__name__} {type(first_stage).__name__}".lower()
+                    is_audio_cls = any(k in cls_hint for k in ("audio", "bigvgan", "oobleck", "dac", "encodec"))
+                    is_stereo_4d = int(samples_in.shape[2]) in (1, 2) and int(samples_in.shape[3]) > int(samples_in.shape[2]) * 4
+                    is_audio_latent = is_audio_cls or is_stereo_4d
+
             if (
-                TORCH_AVAILABLE
-                and torch is not None
-                and isinstance(samples_in, torch.Tensor)
-                and samples_in.ndim == 3
+                is_audio_latent
                 and audio_chunk_steps > 0
                 and int(samples_in.shape[-1]) > audio_chunk_steps
             ):
                 decode_callable = getattr(first_stage, "decode", None)
                 if callable(decode_callable):
-                    dev = torch.device(target_device)
-                    if hasattr(first_stage, "to"):
+                    dev = streamer.compute_device if streamer is not None else torch.device(target_device)
+                    if streamer is None and hasattr(first_stage, "to"):
                         first_stage.to(device=dev, dtype=vae_dtype if vae_dtype is not None else None)
                     return decode_audio_latent_chunked(
                         decode_fn=decode_callable,
