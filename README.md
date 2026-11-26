@@ -24,18 +24,22 @@ By combining **3-Stage Sequential Offloading** (`Text Encoder -> DiT -> Tiled VA
 
 *0. **Real `MiniMaxAI/MiniMax-H3` (`32B Qwen3-VL` + `20B Pruned W6A8` 4-Step Turbo + `4.85 GB` 36-block `ViT3D` Video VAE + `32 kHz` Stereo BigVGAN Audio VAE)** on a **Free `12 GiB` RAM + `14.56 GiB` Tesla T4 (`torch 2.14.1+cu130`, `736×416`, `141 frames @ 24fps = 5.88s`)**:*
 
-| Pipeline Component | Stock Monolithic T4 | PhobosStream (`TorchBlockStreamer` + 3-Stage) | VRAM Saved |
-| :--- | :---: | :---: | :---: |
-| **36-Block `4.85 GB` `ViT3D` Video VAE Decode (141 frames)** | ❌ **`> 14,560 MB` (`CUDA OOM`)** | ✅ **`466.8 MB` Peak VRAM** (`295.1 GB` streamed) | **`96.8%`** |
-| **BigVGAN `32 kHz` Stereo Audio VAE Decode (5.88s)** | ❌ **`> 14,560 MB` (`CUDA OOM`)** | ✅ **`618.4 MB` Peak VRAM** (`8.15 s`, stereo `RMS 0.138`) | **`95.7%`** |
-| **End-to-End 3-Stage MiniMax-H3 (`12 GiB` Host RAM)** | ❌ **OOM (needs 75–134 GB RAM)** | ✅ **Valid 5.88s H.264 + AAC 32kHz Stereo `.mp4`** | **Fits 12 GB Free VM** |
+| Pipeline Component | Stock Monolithic T4 | PhobosStream (`TorchBlockStreamer` + 3-Stage) | Measured Wall Time (Free T4 / 12 GB RAM) | VRAM Saved |
+| :--- | :---: | :---: | :---: | :---: |
+| **Stage 1: `Qwen3-VL-32B` Text Encoder (NVFP4)** | ❌ **OOM in 12 GB RAM** | ✅ **`14,032.7 MB` Peak VRAM** | `74.11 s` (`1m 14s`) | Fits 12 GB VM |
+| **Stage 2: `MiniMax-H3` 20B `w6a8` (4-Step Turbo)** | ❌ **OOM in 12 GB RAM** | ✅ **`13,724.3 MB` Peak VRAM** *(Comfy `--lowvram`)* | `1,141.20 s` (`19m 01s`) | Fits 12 GB VM |
+| **Stage 3A: 36-Block `4.85 GB` `ViT3D` Video VAE (141 frames)** | ❌ **`> 14,560 MB` (`CUDA OOM`)** | ✅ **`466.8 MB` Peak VRAM** (`295.1 GB` streamed) | `308.13 s` (`5m 08s`) | **`96.8%`** |
+| **Stage 3B: BigVGAN `32 kHz` Stereo Audio VAE (5.88s)** | ❌ **`> 14,560 MB` (`CUDA OOM`)** | ✅ **`618.4 MB` Peak VRAM** (stereo `RMS 0.138`) | `8.15 s` | **`95.7%`** |
+| **Total End-to-End (`5.88s` H.264 + AAC Stereo `.mp4`)** | ❌ **Crashes (OOM)** | ✅ **Valid `2.7 MB` MP4** | **`1,531.59 s` (`25m 32s`)** | **Fits Free Colab** |
+
+> **Honest Latency Note:** End-to-end generation took **`25m 32s`** on a **free 2018 Tesla T4 (SM75, no BF16/FP8 Tensor Cores or FlashAttention-2) with only `12 GiB` host RAM (`0 B` swap)** — ~75% (`19m 01s`) was Stage 2 Turing compute + disk page-cache reloading because the 16 GB model exceeded the 12 GB host RAM ceiling. Stage 3A (`5m 08s`) used conservative 1-block-at-a-time streaming (`466.8 MB` VRAM); keeping blocks GPU-resident via `HYBRID_BUDGET` on GPUs with headroom eliminates most of that VAE transfer time.
 
 *1. **Real `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` (~14.5 GB BF16: `UMT5-XXL` + 30-block `WanDiT` + 3D `WanVAE`)** under an enforced **`8.00 GiB` CUDA VRAM limit** (`torch.cuda.set_per_process_memory_fraction`, native widescreen **`832×480`**, `25 frames`, `40 steps`, `flow_shift=3.0` via standalone FastAPI `/v1/videos/generations`):*
 
-| Pipeline Configuration | Enforced CUDA Cap | Peak CUDA VRAM | Result |
-| :--- | :---: | :---: | :--- |
-| **Standard Monolithic `WanPipeline.to("cuda")`** | `8,192.0 MB` (`8.0 GiB`) | `> 8,192 MB` (**OOM**) | ❌ Crashes (`CUDA out of memory`) |
-| **`phobos-stream serve` (`HYBRID_BUDGET` + Fused SDPA)** | `8,192.0 MB` (`8.0 GiB`) | **`3,263.9 MB` (`3.19 GiB`)** | ✅ Crisp 25-frame `832×480` H.264 `.mp4` (fits even 4 GB–8 GB GPUs!) |
+| Pipeline Configuration | Enforced CUDA Cap | Peak CUDA VRAM | Wall Time (Tesla T4, 40 Steps) | Result |
+| :--- | :---: | :---: | :---: | :--- |
+| **Standard Monolithic `WanPipeline.to("cuda")`** | `8,192.0 MB` (`8.0 GiB`) | `> 8,192 MB` (**OOM**) | — | ❌ Crashes (`CUDA out of memory`) |
+| **`phobos-stream serve` (`HYBRID_BUDGET` + Fused SDPA)** | `8,192.0 MB` (`8.0 GiB`) | **`3,263.9 MB` (`3.19 GiB`)** | **`1,332.11 s` (`22m 12s`)** | ✅ Crisp 25-frame `832×480` H.264 `.mp4` (fits 4–8 GB GPUs) |
 
 *2. **3-Tier `TorchBlockStreamer` Benchmark on NVIDIA Tesla T4** (24-block 2.3 GB FP16 DiT, `4 steps`, double-buffered CUDA `record_stream` prefetch):*
 
