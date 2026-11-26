@@ -226,6 +226,13 @@ def attach_streamer_to_comfy_model(
             if resolved:
                 st_paths.append(Path(resolved))
 
+    # Apply pending ComfyUI patches (e.g. LoRAs) on CPU before taking ownership of block residency.
+    if hasattr(comfy_model, "patch_model") and getattr(comfy_model, "patches", None):
+        try:
+            comfy_model.patch_model(device_to=torch.device("cpu") if TORCH_AVAILABLE and torch is not None else None)
+        except Exception:
+            pass
+
     streamer = TorchBlockStreamer(
         model=diff_mod,
         compute_device="auto",
@@ -234,6 +241,17 @@ def attach_streamer_to_comfy_model(
         vram_budget_mb=vram_budget_mb if (vram_budget_mb and vram_budget_mb > 0) else None,
     )
     streamer.attach()
+
+    # Prevent ComfyUI's ModelPatcher from hauling offloaded blocks back onto GPU during KSampler.
+    if hasattr(comfy_model, "load"):
+        comfy_model._phobos_orig_load = getattr(comfy_model, "_phobos_orig_load", comfy_model.load)
+        comfy_model.load = lambda *args, **kwargs: None
+    if hasattr(comfy_model, "patch_model"):
+        comfy_model._phobos_orig_patch_model = getattr(comfy_model, "_phobos_orig_patch_model", comfy_model.patch_model)
+        comfy_model.patch_model = lambda *args, **kwargs: getattr(comfy_model, "model", diff_mod)
+    if hasattr(comfy_model, "model_size"):
+        comfy_model.model_size = lambda: 0
+
     return streamer
 
 
