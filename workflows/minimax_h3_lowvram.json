@@ -8,7 +8,7 @@
       "pos": [40, 60],
       "size": [340, 106],
       "outputs": [{"name": "CLIP", "type": "CLIP", "links": [1, 2]}],
-      "widgets_values": ["qwen_3_vl_32b_nvfp4.safetensors", "minimax_h3", "default"]
+      "widgets_values": ["qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", "minimax", "default"]
     },
     {
       "id": 2,
@@ -34,7 +34,7 @@
       "pos": [40, 240],
       "size": [340, 82],
       "outputs": [{"name": "MODEL", "type": "MODEL", "links": [5]}],
-      "widgets_values": ["minimax_h3_pruned_w6a8_cu130.safetensors", "default"]
+      "widgets_values": ["minimax_h3_fl2va_pruned_w6a8.safetensors", "default"]
     },
     {
       "id": 5,
@@ -43,7 +43,7 @@
       "size": [340, 82],
       "inputs": [{"name": "model", "type": "MODEL", "link": 5}],
       "outputs": [{"name": "MODEL", "type": "MODEL", "links": [6]}],
-      "widgets_values": ["minimax_h3_turbo_4steps.safetensors", 1.0]
+      "widgets_values": ["minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors", 1.0]
     },
     {
       "id": 6,
@@ -93,7 +93,7 @@
       "pos": [860, 500],
       "size": [320, 58],
       "outputs": [{"name": "VAE", "type": "VAE", "links": [12]}],
-      "widgets_values": ["minimax_h3_video_vae_bf16.safetensors"]
+      "widgets_values": ["minimax_h3_video_vae_fp16.safetensors"]
     },
     {
       "id": 11,
@@ -121,7 +121,7 @@
       "pos": [860, 620],
       "size": [320, 58],
       "outputs": [{"name": "VAE", "type": "VAE", "links": [14]}],
-      "widgets_values": ["minimax_h3_audio_vae_bf16.safetensors"]
+      "widgets_values": ["minimax_h3_audio_vae_fp32.safetensors"]
     },
     {
       "id": 14,
