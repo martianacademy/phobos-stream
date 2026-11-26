@@ -234,7 +234,11 @@ def attach_streamer_to_comfy_vae(
 
     streamer: Optional[TorchBlockStreamer] = None
     discovered_blocks = discover_block_modules(target_module) if mode != BlockStreamMode.STAGE_ONLY else []
+    vae_dtype = getattr(comfy_vae, "vae_dtype", None)
     if discovered_blocks:
+        if vae_dtype is not None and hasattr(first_stage, "to"):
+            first_stage.to(dtype=vae_dtype)
+
         streamer = TorchBlockStreamer(
             model=target_module,
             compute_device=target_device,
@@ -244,10 +248,29 @@ def attach_streamer_to_comfy_vae(
         )
         streamer.attach()
 
-        # Keep small decode-path siblings (e.g. `post_quant_conv`) on compute_device.
+        # Keep small decode-path siblings & normalization buffers on compute_device.
         post_quant = getattr(first_stage, "post_quant_conv", None)
         if post_quant is not None and hasattr(post_quant, "to"):
-            post_quant.to(streamer.compute_device)
+            post_quant.to(device=streamer.compute_device, dtype=vae_dtype if vae_dtype is not None else None)
+        if TORCH_AVAILABLE and torch is not None:
+            for buf_name in ("latents_mean", "latents_std", "pixel_mean", "pixel_std"):
+                buf_val = getattr(first_stage, buf_name, None)
+                if isinstance(buf_val, torch.Tensor):
+                    setattr(first_stage, buf_name, buf_val.to(streamer.compute_device))
+
+        # MiniMaxH3 ViT3D VAE: force 1-tile streaming to avoid multi-tile GPU buffer OOMs.
+        if (
+            hasattr(first_stage, "_decode_tile_row")
+            and hasattr(first_stage, "_decode_pixels")
+            and hasattr(first_stage, "vae_ratio")
+        ):
+            def _single_tile_row(z_row: Any, x_idx: Any, x_len: Any) -> Any:
+                ratio = first_stage.vae_ratio
+                for j_pos, j_len in zip(x_idx, x_len):
+                    sl = z_row[..., j_pos // ratio : (j_pos + j_len) // ratio]
+                    yield from first_stage._decode_pixels(sl).chunk(1)
+
+            first_stage._decode_tile_row = _single_tile_row
 
         # Prevent ComfyUI's ModelPatcher from hauling offloaded decoder blocks back onto GPU.
         patcher = getattr(comfy_vae, "patcher", None)
@@ -272,19 +295,44 @@ def attach_streamer_to_comfy_vae(
                 TORCH_AVAILABLE
                 and torch is not None
                 and isinstance(samples_in, torch.Tensor)
+                and samples_in.ndim == 5
+                and streamer is not None
+                and hasattr(first_stage, "decode_output_shape")
+                and callable(getattr(first_stage, "decode", None))
+            ):
+                out_shape = first_stage.decode_output_shape(samples_in.shape)
+                out_cpu = torch.empty(out_shape, dtype=torch.float32, device="cpu")
+                with torch.no_grad():
+                    z_dev = samples_in.to(
+                        device=streamer.compute_device,
+                        dtype=vae_dtype if vae_dtype is not None else samples_in.dtype,
+                    )
+                    first_stage.decode(z_dev, output_buffer=out_cpu)
+                    del z_dev
+                # Normalize `(B, C, T, H, W)` -> ComfyUI `(B, T, H, W, C)` float32 in [0, 1].
+                if out_cpu.ndim == 5 and out_cpu.shape[1] in (3, 4):
+                    return out_cpu.permute(0, 2, 3, 4, 1).clamp(0.0, 1.0)
+                return out_cpu
+
+            if (
+                TORCH_AVAILABLE
+                and torch is not None
+                and isinstance(samples_in, torch.Tensor)
                 and samples_in.ndim == 3
                 and audio_chunk_steps > 0
                 and int(samples_in.shape[-1]) > audio_chunk_steps
             ):
                 decode_callable = getattr(first_stage, "decode", None)
                 if callable(decode_callable):
-                    vae_dtype = getattr(comfy_vae, "vae_dtype", None)
+                    dev = torch.device(target_device)
+                    if hasattr(first_stage, "to"):
+                        first_stage.to(device=dev, dtype=vae_dtype if vae_dtype is not None else None)
                     return decode_audio_latent_chunked(
                         decode_fn=decode_callable,
                         latent=samples_in,
                         chunk_steps=audio_chunk_steps,
                         overlap_steps=audio_overlap_steps,
-                        device=torch.device(target_device),
+                        device=dev,
                         dtype=vae_dtype,
                     )
                 return decode_audio_latent_chunked(
