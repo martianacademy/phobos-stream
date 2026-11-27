@@ -37,7 +37,7 @@ def _move_non_block_clip_tensors(
 def torch_param_to(param: Any, target_device: Any) -> Any:
     import torch.nn as nn
 
-    return nn.Parameter(param.data.to(target_device), requires_grad=False)
+    return nn.Parameter(param.detach().to(target_device), requires_grad=False)
 
 
 def _install_cpu_vocab_embedding_wrappers(

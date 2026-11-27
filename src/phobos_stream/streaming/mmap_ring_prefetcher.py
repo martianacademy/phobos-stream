@@ -74,11 +74,11 @@ def build_cpu_pinned_shadow(
             else:
                 cpu_t = loader.read_torch_tensor(real_key, device="cpu", target_dtype=tensor_obj.dtype)
         else:
-            cpu_t = tensor_obj.data.detach().to("cpu")
+            cpu_t = tensor_obj.detach().to("cpu")
         raw_items.append((rel_name, is_param, cpu_t))
 
     def _pin_item(obj: Any) -> Any:
-        if isinstance(obj, PackedGGUFShadow) or not use_pin:
+        if isinstance(obj, PackedGGUFShadow) or not use_pin or type(obj) is not torch.Tensor:
             return obj
         return obj.pin_memory() if not obj.is_pinned() else obj
 

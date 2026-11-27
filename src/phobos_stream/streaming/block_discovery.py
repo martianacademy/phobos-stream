@@ -47,22 +47,51 @@ def resolve_subattr(root: Any, dotted_path: str) -> Tuple[Any, str]:
 
 
 def assign_tensor(root: Any, dotted_path: str, new_tensor: Any, is_param: bool) -> None:
-    """Assign a parameter or buffer tensor safely, including on `meta`-device skeletons."""
+    """Assign a parameter or buffer tensor safely, including `meta` skeletons & `QuantizedTensor` subclasses."""
+    import torch
     import torch.nn as nn
 
     parent, leaf = resolve_subattr(root, dotted_path)
+    is_plain_new = type(new_tensor) is torch.Tensor
     if is_param:
         existing = parent._parameters.get(leaf)
-        if existing is None or getattr(existing, "is_meta", False):
+        if (
+            existing is None
+            or getattr(existing, "is_meta", False)
+            or not is_plain_new
+            or type(existing.data) is not torch.Tensor
+        ):
             parent._parameters[leaf] = nn.Parameter(new_tensor, requires_grad=False)
         else:
             existing.data = new_tensor
     else:
         existing = parent._buffers.get(leaf)
-        if existing is None or getattr(existing, "is_meta", False):
+        if (
+            existing is None
+            or getattr(existing, "is_meta", False)
+            or not is_plain_new
+            or type(existing) is not torch.Tensor
+        ):
             parent._buffers[leaf] = new_tensor
         else:
             existing.data = new_tensor
+
+
+def safe_record_stream(tensor_obj: Any, stream: Any) -> None:
+    """Record CUDA stream ownership on plain tensors and `QuantizedTensor` wrapper subclasses."""
+    import torch
+
+    if type(tensor_obj) is torch.Tensor:
+        tensor_obj.record_stream(stream)
+        return
+    for attr in ("_qdata", "_data"):
+        inner = getattr(tensor_obj, attr, None)
+        if isinstance(inner, torch.Tensor) and inner.is_cuda:
+            inner.record_stream(stream)
+    try:
+        tensor_obj.record_stream(stream)
+    except Exception:
+        pass
 
 
 def move_non_persistent_buffers(root: Any, target_device: Any) -> None:

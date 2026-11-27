@@ -16,6 +16,7 @@ from phobos_stream.streaming.block_discovery import (
     iter_persistent_module_tensors,
     lookup_safetensors_key,
     move_non_persistent_buffers,
+    safe_record_stream,
 )
 from phobos_stream.streaming.attention_fastpath import PhobosAttentionFastpath
 from phobos_stream.streaming.budget_planner import BlockTier, HybridBudgetPlan, MemoryBudgetPlanner
@@ -249,7 +250,7 @@ class TorchBlockStreamer:
                 loaded = loader.read_torch_tensor(real_key, device=str(self.compute_device), target_dtype=tensor_obj.dtype)
                 assign_tensor(self.model, full_name, loaded, is_param)
             elif tensor_obj.device != self.compute_device:
-                assign_tensor(self.model, full_name, tensor_obj.data.to(self.compute_device), is_param)
+                assign_tensor(self.model, full_name, tensor_obj.detach().to(self.compute_device), is_param)
 
     def _can_mmap_block(
         self,
@@ -307,7 +308,7 @@ class TorchBlockStreamer:
                         dev_t = loader.read_torch_tensor(real_key, device=str(self.compute_device), target_dtype=tensor_obj.dtype)
                         assign_tensor(blk, rel_name, dev_t, is_param)
                     elif tensor_obj.device != self.compute_device:
-                        assign_tensor(blk, rel_name, tensor_obj.data.to(self.compute_device), is_param)
+                        assign_tensor(blk, rel_name, tensor_obj.detach().to(self.compute_device), is_param)
                 self._hooks.append(blk.register_forward_hook(self._make_gpu_resident_hook(idx)))
 
             elif tier == BlockTier.CPU_PINNED:
@@ -399,7 +400,7 @@ class TorchBlockStreamer:
                 compute_stream.wait_stream(self._prefetch_stream)
                 dev_map = self._prefetch_cache.pop(idx)
                 for dev_t in dev_map.values():
-                    dev_t.record_stream(compute_stream)
+                    safe_record_stream(dev_t, compute_stream)
             else:
                 nb_flag = target_dev.type == "cuda"
                 dev_map = {

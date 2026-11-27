@@ -150,3 +150,83 @@ def test_gguf_string_kv_metadata_forwarded_to_zero_ram_header(tmp_path: Path) ->
     meta_sd, raw_meta = build_header_only_meta_state_dict(p, scalar_threshold_elems=16)
     assert "transformer_blocks.0.ff.net.0.proj.weight" in meta_sd
     assert '"ff_bias": false' in raw_meta.get("config", "")
+
+
+def test_quantized_tensor_wrapper_subclass_streaming() -> None:
+    """Ensure `__torch_dispatch__` `QuantizedTensor` wrapper subclasses preserve `_qdata` across block swaps."""
+    import torch
+    import torch.nn as nn
+    from phobos_stream.streaming import BlockStreamMode, TorchBlockStreamer
+
+    class _MockQuantizedTensor(torch.Tensor):
+        @staticmethod
+        def __new__(cls, qdata: torch.Tensor, scale: torch.Tensor) -> "_MockQuantizedTensor":
+            return torch.Tensor._make_wrapper_subclass(
+                cls,
+                qdata.shape,
+                dtype=torch.float32,
+                device=qdata.device,
+                requires_grad=False,
+            )
+
+        def __init__(self, qdata: torch.Tensor, scale: torch.Tensor) -> None:
+            self._qdata = qdata
+            self._scale = scale
+
+        def __repr__(self) -> str:
+            return f"_MockQuantizedTensor(device={self._qdata.device})"
+
+        @classmethod
+        def __torch_dispatch__(cls, func, types, args=(), kwargs=None):
+            kwargs = kwargs or {}
+            if func in (torch.ops.aten._to_copy.default, torch.ops.aten.to.dtype_layout):
+                src = args[0]
+                dev = kwargs.get("device", src._qdata.device)
+                return _MockQuantizedTensor(src._qdata.to(device=dev), src._scale.to(device=dev))
+            if func is torch.ops.aten.detach.default:
+                src = args[0]
+                return _MockQuantizedTensor(src._qdata.detach(), src._scale.detach())
+            if func is torch.ops.aten.t.default:
+                src = args[0]
+                return _MockQuantizedTensor(src._qdata.t(), src._scale)
+            if func is torch.ops.aten.mm.default:
+                inp, wt = args[0], args[1]
+                assert inp.device == wt._qdata.device
+                return torch.mm(inp, wt._qdata.float() * wt._scale)
+            if func is torch.ops.aten.linear.default:
+                inp, wt = args[0], args[1]
+                bias = args[2] if len(args) > 2 else None
+                assert inp.device == wt._qdata.device
+                return torch.nn.functional.linear(inp, wt._qdata.float() * wt._scale, bias)
+            raise NotImplementedError(f"Unhandled op {func}")
+
+    class _Block(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.proj = nn.Linear(16, 16, bias=False)
+            qt = _MockQuantizedTensor(torch.ones((16, 16), dtype=torch.int8), torch.tensor(0.25))
+            self.proj.weight = nn.Parameter(qt, requires_grad=False)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            return self.proj(x)
+
+    class _Model(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.blocks = nn.ModuleList([_Block(), _Block()])
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            for blk in self.blocks:
+                x = blk(x)
+            return x
+
+    m = _Model()
+    x = torch.ones((2, 16), dtype=torch.float32)
+    ref = m(x)
+    dev = "mps" if (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()) else "cpu"
+    with TorchBlockStreamer(m, compute_device=dev, mode=BlockStreamMode.CPU_OFFLOAD, pin_memory=False) as st:
+        out = m(x.to(dev)).cpu()
+        assert st.blocks_executed == 2
+        assert m.blocks[0].proj.weight._qdata.device.type == "cpu"
+    assert torch.allclose(ref, out)
+
