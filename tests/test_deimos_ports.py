@@ -154,7 +154,7 @@ def test_gguf_string_kv_metadata_forwarded_to_zero_ram_header(tmp_path: Path) ->
 
 def test_quantized_tensor_wrapper_subclass_streaming() -> None:
     """Ensure `__torch_dispatch__` `QuantizedTensor` wrapper subclasses preserve `_qdata` across block swaps."""
-    import torch
+    torch = pytest.importorskip("torch")
     import torch.nn as nn
     from phobos_stream.streaming import BlockStreamMode, TorchBlockStreamer
 
