@@ -7,7 +7,6 @@ import io
 from pathlib import Path
 import struct
 import numpy as np
-from PIL import Image
 import pytest
 
 import phobos_stream
@@ -174,6 +173,7 @@ def test_one_line_sdk_stream_and_unstream_plus_i2v_image_loader(tmp_path: Path) 
     assert not hasattr(model, "_phobos_streamer")
 
     # Test I2V conditioning image loader (data URI + local PNG resize)
+    Image = pytest.importorskip("PIL.Image")
     img_arr = np.zeros((40, 60, 3), dtype=np.uint8)
     img_arr[:, :, 0] = 220
     buf = io.BytesIO()
