@@ -118,6 +118,7 @@ Ships **9 drop-in nodes** under `PhobosStream`:
 - **`PhobosZeroRAMLoader`** — Loads `14 GB–68 GB+` `.safetensors` & `.gguf` (`FLUX.2`, `LTX-2.5`, `Wan2.2`, `HunyuanVideo`) onto `meta` in `~1.0 GB` Host Heap (`mmap_stream`, `hybrid_budget`, or compressed `cpu_offload`).
 - **`PhobosCLIPStreamPatcher`** — `CLIP -> CLIP` streamer for `Gemma-4 12B`, `Mistral-3`, `UMT5-XXL`, `T5-XXL`, and `Qwen-VL` with `0 MB`-VRAM CPU vocabulary lookup.
 - **`PhobosBlockStreamPatcher`**, **`PhobosFirstBlockCache`**, **`PhobosVAEStreamPatcher`** (`ViT3D` Video + `32 kHz` Stereo Audio), and **`PhobosStageOffloadPipeline`**.
+- **Ready-to-Run Workflows (`workflows/`):** [`flux2_32b_zeroram.json`](https://github.com/martianacademy/ComfyUI-PhobosStream/blob/main/workflows/flux2_32b_zeroram.json) · [`ltx25_22b_audiovideo_zeroram.json`](https://github.com/martianacademy/ComfyUI-PhobosStream/blob/main/workflows/ltx25_22b_audiovideo_zeroram.json) · [`wan22_dual14b_zeroram.json`](https://github.com/martianacademy/ComfyUI-PhobosStream/blob/main/workflows/wan22_dual14b_zeroram.json) · [`minimax_h3_lowvram.json`](https://github.com/martianacademy/ComfyUI-PhobosStream/blob/main/workflows/minimax_h3_lowvram.json)
 
 ### 4. CLI & OpenAI / Sora-Compatible Video (`T2V` + `I2V`) Server
 

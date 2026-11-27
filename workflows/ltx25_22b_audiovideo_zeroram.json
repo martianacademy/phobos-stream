@@ -1,0 +1,887 @@
+{
+  "last_node_id": 21,
+  "last_link_id": 23,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "CLIPLoader",
+      "pos": [
+        40,
+        60
+      ],
+      "size": [
+        360,
+        106
+      ],
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            1
+          ]
+        }
+      ],
+      "widgets_values": [
+        "gemma4-12b-with-proj-ltx-2.5-bf16.safetensors",
+        "ltxv",
+        "default"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "PhobosCLIPStreamPatcher",
+      "pos": [
+        430,
+        60
+      ],
+      "size": [
+        340,
+        106
+      ],
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "links": [
+            2,
+            3
+          ]
+        }
+      ],
+      "widgets_values": [
+        "cpu_offload",
+        0.0,
+        true
+      ]
+    },
+    {
+      "id": 3,
+      "type": "CLIPTextEncode",
+      "pos": [
+        800,
+        40
+      ],
+      "size": [
+        380,
+        120
+      ],
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            4
+          ]
+        }
+      ],
+      "widgets_values": [
+        "Close-up cinematic tracking shot of a Mars rover driving across wet dark basalt gravel in twilight rain, amber headlights reflecting on puddles, crisp electric motor hum and rain pattering on metal."
+      ]
+    },
+    {
+      "id": 4,
+      "type": "CLIPTextEncode",
+      "pos": [
+        800,
+        190
+      ],
+      "size": [
+        380,
+        90
+      ],
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            5
+          ]
+        }
+      ],
+      "widgets_values": [
+        "blurry, low quality, distorted, static frame, muted audio"
+      ]
+    },
+    {
+      "id": 5,
+      "type": "LTXVConditioning",
+      "pos": [
+        1210,
+        80
+      ],
+      "size": [
+        260,
+        82
+      ],
+      "inputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 4
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "links": [
+            10
+          ]
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "links": []
+        }
+      ],
+      "widgets_values": [
+        24.0
+      ]
+    },
+    {
+      "id": 6,
+      "type": "PhobosZeroRAMLoader",
+      "pos": [
+        40,
+        240
+      ],
+      "size": [
+        360,
+        250
+      ],
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "links": [
+            9
+          ]
+        }
+      ],
+      "widgets_values": [
+        "ltx-2.5-22b-distilled-Q8_0.gguf",
+        "mmap_stream",
+        "default",
+        0.0,
+        0.0,
+        0.0,
+        2,
+        2,
+        "auto"
+      ]
+    },
+    {
+      "id": 7,
+      "type": "VAELoader",
+      "pos": [
+        40,
+        530
+      ],
+      "size": [
+        360,
+        58
+      ],
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            6,
+            20
+          ]
+        }
+      ],
+      "widgets_values": [
+        "ltx-2.5-audio-vae-bf16.safetensors"
+      ]
+    },
+    {
+      "id": 8,
+      "type": "EmptyLTXVLatentVideo",
+      "pos": [
+        430,
+        320
+      ],
+      "size": [
+        300,
+        130
+      ],
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            7
+          ]
+        }
+      ],
+      "widgets_values": [
+        768,
+        512,
+        97,
+        1
+      ]
+    },
+    {
+      "id": 9,
+      "type": "LTXVEmptyLatentAudio",
+      "pos": [
+        430,
+        480
+      ],
+      "size": [
+        300,
+        130
+      ],
+      "inputs": [
+        {
+          "name": "audio_vae",
+          "type": "VAE",
+          "link": 6
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            8
+          ]
+        }
+      ],
+      "widgets_values": [
+        97,
+        24,
+        1
+      ]
+    },
+    {
+      "id": 10,
+      "type": "LTXVConcatAVLatent",
+      "pos": [
+        770,
+        380
+      ],
+      "size": [
+        260,
+        66
+      ],
+      "inputs": [
+        {
+          "name": "video_latent",
+          "type": "LATENT",
+          "link": 7
+        },
+        {
+          "name": "audio_latent",
+          "type": "LATENT",
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            15
+          ]
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "BasicGuider",
+      "pos": [
+        1060,
+        260
+      ],
+      "size": [
+        240,
+        66
+      ],
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 9
+        },
+        {
+          "name": "conditioning",
+          "type": "CONDITIONING",
+          "link": 10
+        }
+      ],
+      "outputs": [
+        {
+          "name": "GUIDER",
+          "type": "GUIDER",
+          "links": [
+            12
+          ]
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "RandomNoise",
+      "pos": [
+        1060,
+        360
+      ],
+      "size": [
+        240,
+        82
+      ],
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "NOISE",
+          "type": "NOISE",
+          "links": [
+            11
+          ]
+        }
+      ],
+      "widgets_values": [
+        42,
+        "fixed"
+      ]
+    },
+    {
+      "id": 13,
+      "type": "KSamplerSelect",
+      "pos": [
+        1060,
+        470
+      ],
+      "size": [
+        240,
+        58
+      ],
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "SAMPLER",
+          "type": "SAMPLER",
+          "links": [
+            13
+          ]
+        }
+      ],
+      "widgets_values": [
+        "euler_ancestral"
+      ]
+    },
+    {
+      "id": 14,
+      "type": "ManualSigmas",
+      "pos": [
+        1060,
+        560
+      ],
+      "size": [
+        320,
+        58
+      ],
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "SIGMAS",
+          "type": "SIGMAS",
+          "links": [
+            14
+          ]
+        }
+      ],
+      "widgets_values": [
+        "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"
+      ]
+    },
+    {
+      "id": 15,
+      "type": "SamplerCustomAdvanced",
+      "pos": [
+        1360,
+        260
+      ],
+      "size": [
+        280,
+        146
+      ],
+      "inputs": [
+        {
+          "name": "noise",
+          "type": "NOISE",
+          "link": 11
+        },
+        {
+          "name": "guider",
+          "type": "GUIDER",
+          "link": 12
+        },
+        {
+          "name": "sampler",
+          "type": "SAMPLER",
+          "link": 13
+        },
+        {
+          "name": "sigmas",
+          "type": "SIGMAS",
+          "link": 14
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 15
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "LATENT",
+          "links": [
+            16
+          ]
+        },
+        {
+          "name": "denoised_output",
+          "type": "LATENT",
+          "links": []
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "LTXVSeparateAVLatent",
+      "pos": [
+        1670,
+        260
+      ],
+      "size": [
+        240,
+        66
+      ],
+      "inputs": [
+        {
+          "name": "av_latent",
+          "type": "LATENT",
+          "link": 16
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video_latent",
+          "type": "LATENT",
+          "links": [
+            17
+          ]
+        },
+        {
+          "name": "audio_latent",
+          "type": "LATENT",
+          "links": [
+            19
+          ]
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "type": "VAELoader",
+      "pos": [
+        1360,
+        450
+      ],
+      "size": [
+        300,
+        58
+      ],
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            18
+          ]
+        }
+      ],
+      "widgets_values": [
+        "ltx-2.5-video-vae-bf16.safetensors"
+      ]
+    },
+    {
+      "id": 18,
+      "type": "VAEDecodeTiled",
+      "pos": [
+        1690,
+        370
+      ],
+      "size": [
+        260,
+        150
+      ],
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 17
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 18
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            21
+          ]
+        }
+      ],
+      "widgets_values": [
+        512,
+        64,
+        64,
+        16
+      ]
+    },
+    {
+      "id": 19,
+      "type": "LTXVAudioVAEDecode",
+      "pos": [
+        1690,
+        550
+      ],
+      "size": [
+        260,
+        66
+      ],
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 19
+        },
+        {
+          "name": "audio_vae",
+          "type": "VAE",
+          "link": 20
+        }
+      ],
+      "outputs": [
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            22
+          ]
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "CreateVideo",
+      "pos": [
+        1690,
+        650
+      ],
+      "size": [
+        260,
+        90
+      ],
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 21
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 22
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            23
+          ]
+        }
+      ],
+      "widgets_values": [
+        24.0
+      ]
+    },
+    {
+      "id": 21,
+      "type": "SaveVideo",
+      "pos": [
+        1690,
+        80
+      ],
+      "size": [
+        280,
+        140
+      ],
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 23
+        }
+      ],
+      "outputs": [],
+      "widgets_values": [
+        "video/Phobos_LTX25_AV",
+        "auto",
+        "auto"
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "CLIP"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      0,
+      "CLIP"
+    ],
+    [
+      3,
+      2,
+      0,
+      4,
+      0,
+      "CLIP"
+    ],
+    [
+      4,
+      3,
+      0,
+      5,
+      0,
+      "CONDITIONING"
+    ],
+    [
+      5,
+      4,
+      0,
+      5,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      6,
+      7,
+      0,
+      9,
+      0,
+      "VAE"
+    ],
+    [
+      7,
+      8,
+      0,
+      10,
+      0,
+      "LATENT"
+    ],
+    [
+      8,
+      9,
+      0,
+      10,
+      1,
+      "LATENT"
+    ],
+    [
+      9,
+      6,
+      0,
+      11,
+      0,
+      "MODEL"
+    ],
+    [
+      10,
+      5,
+      0,
+      11,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      11,
+      12,
+      0,
+      15,
+      0,
+      "NOISE"
+    ],
+    [
+      12,
+      11,
+      0,
+      15,
+      1,
+      "GUIDER"
+    ],
+    [
+      13,
+      13,
+      0,
+      15,
+      2,
+      "SAMPLER"
+    ],
+    [
+      14,
+      14,
+      0,
+      15,
+      3,
+      "SIGMAS"
+    ],
+    [
+      15,
+      10,
+      0,
+      15,
+      4,
+      "LATENT"
+    ],
+    [
+      16,
+      15,
+      0,
+      16,
+      0,
+      "LATENT"
+    ],
+    [
+      17,
+      16,
+      0,
+      18,
+      0,
+      "LATENT"
+    ],
+    [
+      18,
+      17,
+      0,
+      18,
+      1,
+      "VAE"
+    ],
+    [
+      19,
+      16,
+      1,
+      19,
+      0,
+      "LATENT"
+    ],
+    [
+      20,
+      7,
+      0,
+      19,
+      1,
+      "VAE"
+    ],
+    [
+      21,
+      18,
+      0,
+      20,
+      0,
+      "IMAGE"
+    ],
+    [
+      22,
+      19,
+      0,
+      20,
+      1,
+      "AUDIO"
+    ],
+    [
+      23,
+      20,
+      0,
+      21,
+      0,
+      "VIDEO"
+    ]
+  ],
+  "groups": [
+    {
+      "title": "PhobosStream Zero-RAM LTX-2.5 22B + Gemma-4 12B (Synchronized Video + 48kHz Stereo Audio)",
+      "bounding": [
+        20,
+        10,
+        1980,
+        760
+      ],
+      "color": "#0EA5E9"
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.85,
+      "offset": [
+        40,
+        40
+      ]
+    }
+  },
+  "version": 0.4
+}
