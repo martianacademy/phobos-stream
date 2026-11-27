@@ -99,6 +99,12 @@ def _extract_call_state(args: Tuple[Any, ...], kwargs: Dict[str, Any], is_pair: 
         if len(args) >= 2 and isinstance(args[0], torch.Tensor) and isinstance(args[1], torch.Tensor):
             return (args[0], args[1])
 
+    if is_pair is not False:
+        if args and isinstance(args[0], tuple) and _is_valid_state(args[0]):
+            return args[0]
+        if "x" in kwargs and isinstance(kwargs["x"], tuple) and _is_valid_state(kwargs["x"]):
+            return kwargs["x"]
+
     if args and isinstance(args[0], torch.Tensor):
         return args[0]
     for key in ("img", "x", "hidden_states"):
@@ -272,7 +278,7 @@ class FirstBlockResidualCache:
         skipped_leading_blocks = 0
         while len(raw_groups) > 1:
             first_pfx = raw_groups[0][0][0]
-            if any(tok in first_pfx for tok in ("txt_in", "context_refiner")):
+            if any(tok in first_pfx for tok in ("txt_in", "context_refiner", "embeddings_connector")):
                 skipped_leading_blocks += len(raw_groups.pop(0))
             else:
                 break

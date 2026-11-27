@@ -2,8 +2,11 @@
 
 from dataclasses import dataclass
 from enum import Enum
+import mmap
 import os
+from pathlib import Path
 import platform
+import re
 import subprocess
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -36,18 +39,86 @@ class HybridBudgetPlan:
         }
 
 
+def _detect_cgroup_available_bytes() -> Optional[int]:
+    """Detect free RAM inside Linux cgroup v1/v2 containers (Docker, Colab, Modal, K8s)."""
+    dirs = [Path("/sys/fs/cgroup"), Path("/sys/fs/cgroup/memory")]
+    cg_proc = Path("/proc/self/cgroup")
+    if cg_proc.exists():
+        try:
+            for line in cg_proc.read_text(encoding="utf-8").splitlines():
+                parts = line.split(":", 2)
+                if len(parts) == 3 and parts[2].startswith("/") and len(parts[2]) > 1:
+                    rel = parts[2].lstrip("/")
+                    dirs.append(Path("/sys/fs/cgroup") / rel)
+                    dirs.append(Path("/sys/fs/cgroup/memory") / rel)
+        except OSError:
+            pass
+
+    best: Optional[int] = None
+    for d in dirs:
+        try:
+            v2 = d / "memory.max"
+            if v2.exists():
+                raw_max = v2.read_text(encoding="utf-8").strip()
+                if raw_max != "max":
+                    used = int((d / "memory.current").read_text(encoding="utf-8").strip())
+                    stat_p = d / "memory.stat"
+                    reclaim = 0
+                    if stat_p.exists():
+                        m = re.search(r"^inactive_file (\d+)", stat_p.read_text(encoding="utf-8"), re.M)
+                        if m:
+                            reclaim = int(m.group(1))
+                    val = max(0, int(raw_max) - used + reclaim)
+                    best = val if best is None else min(best, val)
+            v1 = d / "memory.limit_in_bytes"
+            if v1.exists():
+                lim = int(v1.read_text(encoding="utf-8").strip())
+                if lim < (1 << 60):
+                    used = int((d / "memory.usage_in_bytes").read_text(encoding="utf-8").strip())
+                    val = max(0, lim - used)
+                    best = val if best is None else min(best, val)
+        except (OSError, ValueError):
+            pass
+    return best
+
+
+def advise_dontneed_mmap_range(mmap_obj: Any, abs_start: int, abs_end: int) -> None:
+    """Release clean OS file-backed `mmap` pages (`MADV_DONTNEED`) to prevent container RSS bloat."""
+    madv_fn = getattr(mmap_obj, "madvise", None)
+    dontneed = getattr(mmap, "MADV_DONTNEED", None)
+    if madv_fn is None or dontneed is None or getattr(mmap_obj, "closed", True):
+        return
+    try:
+        page_sz = int(os.sysconf("SC_PAGE_SIZE"))
+    except (AttributeError, ValueError, OSError):
+        page_sz = 4096
+    aligned_start = ((max(0, int(abs_start)) + page_sz - 1) // page_sz) * page_sz
+    aligned_end = (int(abs_end) // page_sz) * page_sz
+    if aligned_end > aligned_start:
+        try:
+            madv_fn(dontneed, aligned_start, aligned_end - aligned_start)
+        except (OSError, ValueError, BufferError):
+            pass
+
+
 def detect_host_available_ram_bytes(safety_fraction: float = 0.65) -> int:
-    """Detect available host RAM in bytes across Linux (`/proc/meminfo`) and macOS (`vm_stat`)."""
+    """Detect available host RAM in bytes across Linux (`/proc/meminfo` + cgroups) and macOS (`vm_stat`)."""
     sys_name = platform.system()
     if sys_name == "Linux" and os.path.exists("/proc/meminfo"):
+        avail_bytes: Optional[int] = None
         try:
             with open("/proc/meminfo", "r", encoding="utf-8") as f:
                 for line in f:
                     if line.startswith("MemAvailable:"):
-                        kb = int(line.split()[1])
-                        return int(kb * 1024 * safety_fraction)
+                        avail_bytes = int(line.split()[1]) * 1024
+                        break
         except Exception:
             pass
+        cg_avail = _detect_cgroup_available_bytes()
+        if cg_avail is not None:
+            avail_bytes = cg_avail if avail_bytes is None else min(avail_bytes, cg_avail)
+        if avail_bytes is not None:
+            return int(avail_bytes * safety_fraction)
 
     if sys_name == "Darwin":
         try:
@@ -115,14 +186,19 @@ class MemoryBudgetPlanner:
         compute_device: Any = "cpu",
         has_mmap_backing: bool = False,
         activation_reserve_mb: int = 1536,
+        cpu_block_sizes_bytes: Optional[Sequence[int]] = None,
     ) -> HybridBudgetPlan:
         """Partition `block_sizes_bytes` greedily into fastest tiers within memory budgets.
 
         Reserves space for at least 2 transient streaming blocks on GPU when offloading is
-        required so active pre-hook transfers never exceed `vram_budget_mb`.
+        required so active pre-hook transfers never exceed `vram_budget_mb`. When
+        `cpu_block_sizes_bytes` is supplied (e.g. compressed `.gguf` `PackedGGUFShadow`),
+        `CPU_PINNED` residency is budgeted by compressed Host RAM bytes while `GPU_RESIDENT`
+        uses unpacked device tensor bytes.
         """
         max_block = max(block_sizes_bytes) if block_sizes_bytes else 0
         total_model_bytes = sum(int(b) for b in block_sizes_bytes)
+        cpu_sizes = cpu_block_sizes_bytes if cpu_block_sizes_bytes is not None else block_sizes_bytes
 
         if vram_budget_mb is not None and vram_budget_mb >= 0:
             raw_vram_budget = int(vram_budget_mb * 1024 * 1024)
@@ -153,17 +229,18 @@ class MemoryBudgetPlanner:
         cpu_used = 0
         mmap_used = 0
 
-        for sz in block_sizes_bytes:
+        for sz, c_sz in zip(block_sizes_bytes, cpu_sizes):
             b_sz = int(sz)
+            cpu_b_sz = int(c_sz)
             if gpu_used + b_sz <= effective_vram:
                 tiers.append(BlockTier.GPU_RESIDENT)
                 gpu_used += b_sz
-            elif cpu_used + b_sz <= raw_ram_budget or not has_mmap_backing:
+            elif cpu_used + cpu_b_sz <= raw_ram_budget or not has_mmap_backing:
                 tiers.append(BlockTier.CPU_PINNED)
-                cpu_used += b_sz
+                cpu_used += cpu_b_sz
             else:
                 tiers.append(BlockTier.NVME_MMAP)
-                mmap_used += b_sz
+                mmap_used += cpu_b_sz
 
         return HybridBudgetPlan(
             tiers=tiers,

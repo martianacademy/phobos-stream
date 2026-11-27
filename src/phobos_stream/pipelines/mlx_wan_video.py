@@ -44,26 +44,64 @@ def _flush_metal() -> None:
         mx.clear_cache()
 
 
-def _gelu_tanh(x: Any) -> Any:
+_COMPILED_OPS: Optional[Dict[str, Any]] = None
+
+
+def _get_compiled_mlx_ops() -> Dict[str, Any]:
+    """Lazily compile fused Apple Metal kernels (`RoPE`, `AdaLN`, `GatedAdd`, `GELU`) once per process."""
+    global _COMPILED_OPS
+    if _COMPILED_OPS is not None:
+        return _COMPILED_OPS
+
+    import mlx.core as mx
     import mlx.nn as nn
 
-    return nn.gelu_approx(x)
+    @mx.compile
+    def _rope(x: Any, cos_half: Any, sin_half: Any) -> Any:
+        orig_dt = x.dtype
+        B, N, H, D = x.shape
+        xf = x.astype(mx.float32).reshape(B, N, H, D // 2, 2)
+        x1 = xf[..., 0]
+        x2 = xf[..., 1]
+        o1 = x1 * cos_half - x2 * sin_half
+        o2 = x1 * sin_half + x2 * cos_half
+        return mx.stack([o1, o2], axis=-1).reshape(B, N, H, D).astype(orig_dt)
+
+    @mx.compile
+    def _adaln(x: Any, scale: Any, shift: Any) -> Any:
+        orig_dt = x.dtype
+        ln = mx.fast.layer_norm(x.astype(mx.float32), None, None, 1e-6)
+        return (ln * (1.0 + scale) + shift).astype(orig_dt)
+
+    @mx.compile
+    def _gated_add(h: Any, sub: Any, gate: Any) -> Any:
+        orig_dt = h.dtype
+        return (h.astype(mx.float32) + sub.astype(mx.float32) * gate).astype(orig_dt)
+
+    @mx.compile
+    def _gelu(x: Any) -> Any:
+        return nn.gelu_approx(x)
+
+    _COMPILED_OPS = {"rope": _rope, "adaln": _adaln, "gated_add": _gated_add, "gelu": _gelu}
+    return _COMPILED_OPS
+
+
+def _gelu_tanh(x: Any) -> Any:
+    return _get_compiled_mlx_ops()["gelu"](x)
 
 
 def _layer_norm_fp32(x: Any, weight: Optional[Any] = None, bias: Optional[Any] = None, eps: float = 1e-6) -> Any:
     import mlx.core as mx
 
     xf = x.astype(mx.float32)
-    out = mx.fast.layer_norm(xf, weight.astype(mx.float32) if weight is not None else None, bias.astype(mx.float32) if bias is not None else None, eps)
-    return out
+    return mx.fast.layer_norm(xf, weight.astype(mx.float32) if weight is not None else None, bias.astype(mx.float32) if bias is not None else None, eps)
 
 
 def _rms_norm_fp32(x: Any, weight: Any, eps: float = 1e-6) -> Any:
     import mlx.core as mx
 
     orig_dt = x.dtype
-    out = mx.fast.rms_norm(x.astype(mx.float32), weight.astype(mx.float32), eps)
-    return out.astype(orig_dt)
+    return mx.fast.rms_norm(x.astype(mx.float32), weight.astype(mx.float32), eps).astype(orig_dt)
 
 
 def _build_wan_3d_rope(ppf: int, pph: int, ppw: int, head_dim: int, theta: float = 10000.0) -> Tuple[Any, Any]:
@@ -81,32 +119,15 @@ def _build_wan_3d_rope(ppf: int, pph: int, ppw: int, head_dim: int, theta: float
     ct, st = _1d(t_dim, ppf)
     ch, sh = _1d(h_dim, pph)
     cw, sw = _1d(w_dim, ppw)
-
-    cf = mx.broadcast_to(ct[:, None, None, :], (ppf, pph, ppw, t_dim // 2))
-    chb = mx.broadcast_to(ch[None, :, None, :], (ppf, pph, ppw, h_dim // 2))
-    cwb = mx.broadcast_to(cw[None, None, :, :], (ppf, pph, ppw, w_dim // 2))
-
-    sf = mx.broadcast_to(st[:, None, None, :], (ppf, pph, ppw, t_dim // 2))
-    shb = mx.broadcast_to(sh[None, :, None, :], (ppf, pph, ppw, h_dim // 2))
-    swb = mx.broadcast_to(sw[None, None, :, :], (ppf, pph, ppw, w_dim // 2))
-
-    cos_half = mx.concatenate([cf, chb, cwb], axis=-1).reshape(1, ppf * pph * ppw, 1, head_dim // 2)
-    sin_half = mx.concatenate([sf, shb, swb], axis=-1).reshape(1, ppf * pph * ppw, 1, head_dim // 2)
-    return cos_half, sin_half
+    shape_t, shape_h, shape_w = (ppf, pph, ppw, t_dim // 2), (ppf, pph, ppw, h_dim // 2), (ppf, pph, ppw, w_dim // 2)
+    cos_half = mx.concatenate([mx.broadcast_to(ct[:, None, None, :], shape_t), mx.broadcast_to(ch[None, :, None, :], shape_h), mx.broadcast_to(cw[None, None, :, :], shape_w)], axis=-1)
+    sin_half = mx.concatenate([mx.broadcast_to(st[:, None, None, :], shape_t), mx.broadcast_to(sh[None, :, None, :], shape_h), mx.broadcast_to(sw[None, None, :, :], shape_w)], axis=-1)
+    return cos_half.reshape(1, ppf * pph * ppw, 1, head_dim // 2), sin_half.reshape(1, ppf * pph * ppw, 1, head_dim // 2)
 
 
 def _apply_wan_rope(x: Any, cos_half: Any, sin_half: Any) -> Any:
-    """Apply interleaved complex 3D RoPE matching `WanAttnProcessor` (`[B, N, H, D]`)."""
-    import mlx.core as mx
-
-    orig_dt = x.dtype
-    B, N, H, D = x.shape
-    xf = x.astype(mx.float32).reshape(B, N, H, D // 2, 2)
-    x1 = xf[..., 0]
-    x2 = xf[..., 1]
-    o1 = x1 * cos_half - x2 * sin_half
-    o2 = x1 * sin_half + x2 * cos_half
-    return mx.stack([o1, o2], axis=-1).reshape(B, N, H, D).astype(orig_dt)
+    """Apply fused `@mx.compile` interleaved complex 3D RoPE (`[B, N, H, D]`)."""
+    return _get_compiled_mlx_ops()["rope"](x, cos_half, sin_half)
 
 
 def _timestep_sinusoidal(timesteps: Any, freq_dim: int) -> Any:
@@ -139,7 +160,13 @@ class _KeyMap:
         return arr, nbytes
 
 
-def _load_fused_wan_block(km: _KeyMap, idx: int, compute_dt: Any) -> Tuple[Dict[str, Any], int]:
+def _load_fused_wan_block(
+    km: _KeyMap,
+    idx: int,
+    compute_dt: Any,
+    static_enc: Optional[Any] = None,
+    num_heads: int = 12,
+) -> Tuple[Dict[str, Any], int]:
     """Read and QKV-fuse one `Wan2.1` transformer block into Metal arrays."""
     import mlx.core as mx
 
@@ -173,7 +200,7 @@ def _load_fused_wan_block(km: _KeyMap, idx: int, compute_dt: Any) -> Tuple[Dict[
     f1_w, f1_b = _r("ffn.net.0.proj.weight", "ffn.0.weight"), _r("ffn.net.0.proj.bias", "ffn.0.bias")
     f2_w, f2_b = _r("ffn.net.2.weight", "ffn.2.weight"), _r("ffn.net.2.bias", "ffn.2.bias")
 
-    blk = {
+    blk: Dict[str, Any] = {
         "sst": sst,
         "s_qkv_wT": mx.concatenate([sq_w, sk_w, sv_w], axis=0).T,
         "s_qkv_b": mx.concatenate([sq_b, sk_b, sv_b], axis=0),
@@ -183,12 +210,9 @@ def _load_fused_wan_block(km: _KeyMap, idx: int, compute_dt: Any) -> Tuple[Dict[
         "snk": snk,
         "cq_wT": cq_w.T,
         "cq_b": cq_b,
-        "c_kv_wT": mx.concatenate([ck_w, cv_w], axis=0).T,
-        "c_kv_b": mx.concatenate([ck_b, cv_b], axis=0),
         "co_wT": co_w.T,
         "co_b": co_b,
         "cnq": cnq,
-        "cnk": cnk,
         "n2_w": n2_w,
         "n2_b": n2_b,
         "f1_wT": f1_w.T,
@@ -196,6 +220,17 @@ def _load_fused_wan_block(km: _KeyMap, idx: int, compute_dt: Any) -> Tuple[Dict[
         "f2_wT": f2_w.T,
         "f2_b": f2_b,
     }
+    if static_enc is not None:
+        B, S, D = static_enc.shape
+        head_dim = D // num_heads
+        ckv = static_enc @ mx.concatenate([ck_w, cv_w], axis=0).T + mx.concatenate([ck_b, cv_b], axis=0)
+        ck, cv = mx.split(ckv, 2, axis=-1)
+        blk["static_ck"] = _rms_norm_fp32(ck, cnk).reshape(B, S, num_heads, head_dim).transpose(0, 2, 1, 3)
+        blk["static_cv"] = cv.reshape(B, S, num_heads, head_dim).transpose(0, 2, 1, 3)
+    else:
+        blk["c_kv_wT"] = mx.concatenate([ck_w, cv_w], axis=0).T
+        blk["c_kv_b"] = mx.concatenate([ck_b, cv_b], axis=0)
+        blk["cnk"] = cnk
     mx.eval(*blk.values())
     return blk, total_b
 
@@ -212,6 +247,7 @@ def _exec_wan_block(
     """Execute one fused `Wan2.1` 3D spatiotemporal transformer block on Apple Metal."""
     import mlx.core as mx
 
+    ops = _get_compiled_mlx_ops()
     dt = h.dtype
     B, N, D = h.shape
     head_dim = D // num_heads
@@ -225,36 +261,38 @@ def _exec_wan_block(
     c_scale = mods[:, 4:5, :]
     c_gate = mods[:, 5:6, :]
 
-    # 1. 3D Self-Attention + RoPE
-    n1 = (_layer_norm_fp32(h) * (1.0 + scale_msa) + shift_msa).astype(dt)
+    # 1. 3D Self-Attention + Fused `@mx.compile` RoPE & AdaLN
+    n1 = ops["adaln"](h, scale_msa, shift_msa)
     qkv = n1 @ blk["s_qkv_wT"] + blk["s_qkv_b"]
     q, k, v = mx.split(qkv, 3, axis=-1)
     q = _rms_norm_fp32(q, blk["snq"]).reshape(B, N, num_heads, head_dim)
     k = _rms_norm_fp32(k, blk["snk"]).reshape(B, N, num_heads, head_dim)
-    v = v.reshape(B, N, num_heads, head_dim)
-    q = _apply_wan_rope(q, cos_half, sin_half).transpose(0, 2, 1, 3)
-    k = _apply_wan_rope(k, cos_half, sin_half).transpose(0, 2, 1, 3)
-    v = v.transpose(0, 2, 1, 3)
+    v = v.reshape(B, N, num_heads, head_dim).transpose(0, 2, 1, 3)
+    q = ops["rope"](q, cos_half, sin_half).transpose(0, 2, 1, 3)
+    k = ops["rope"](k, cos_half, sin_half).transpose(0, 2, 1, 3)
     sa = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale_attn).transpose(0, 2, 1, 3).reshape(B, N, D)
     sa = sa @ blk["so_wT"] + blk["so_b"]
-    h = (h.astype(mx.float32) + sa.astype(mx.float32) * gate_msa).astype(dt)
+    h = ops["gated_add"](h, sa, gate_msa)
 
-    # 2. Text Cross-Attention
+    # 2. Text Cross-Attention (uses precomputed static `(ck, cv)` on resident blocks!)
     n2 = _layer_norm_fp32(h, blk["n2_w"], blk["n2_b"]).astype(dt)
     cq = _rms_norm_fp32(n2 @ blk["cq_wT"] + blk["cq_b"], blk["cnq"]).reshape(B, N, num_heads, head_dim).transpose(0, 2, 1, 3)
-    ckv = enc_h @ blk["c_kv_wT"] + blk["c_kv_b"]
-    ck, cv = mx.split(ckv, 2, axis=-1)
-    S = enc_h.shape[1]
-    ck = _rms_norm_fp32(ck, blk["cnk"]).reshape(B, S, num_heads, head_dim).transpose(0, 2, 1, 3)
-    cv = cv.reshape(B, S, num_heads, head_dim).transpose(0, 2, 1, 3)
+    if "static_ck" in blk:
+        ck, cv = blk["static_ck"], blk["static_cv"]
+    else:
+        ckv = enc_h @ blk["c_kv_wT"] + blk["c_kv_b"]
+        ck, cv = mx.split(ckv, 2, axis=-1)
+        S = enc_h.shape[1]
+        ck = _rms_norm_fp32(ck, blk["cnk"]).reshape(B, S, num_heads, head_dim).transpose(0, 2, 1, 3)
+        cv = cv.reshape(B, S, num_heads, head_dim).transpose(0, 2, 1, 3)
     ca = mx.fast.scaled_dot_product_attention(cq, ck, cv, scale=scale_attn).transpose(0, 2, 1, 3).reshape(B, N, D)
     ca = ca @ blk["co_wT"] + blk["co_b"]
     h = h + ca
 
-    # 3. Feed-Forward (`gelu_tanh`)
-    n3 = (_layer_norm_fp32(h) * (1.0 + c_scale) + c_shift).astype(dt)
-    ff = _gelu_tanh(n3 @ blk["f1_wT"] + blk["f1_b"]) @ blk["f2_wT"] + blk["f2_b"]
-    h = (h.astype(mx.float32) + ff.astype(mx.float32) * c_gate).astype(dt)
+    # 3. Feed-Forward (`@mx.compile` `gelu_tanh` + `adaln` + `gated_add`)
+    n3 = ops["adaln"](h, c_scale, c_shift)
+    ff = ops["gelu"](n3 @ blk["f1_wT"] + blk["f1_b"]) @ blk["f2_wT"] + blk["f2_b"]
+    h = ops["gated_add"](h, ff, c_gate)
     return h
 
 
@@ -308,50 +346,29 @@ class MLXWanVideoStreamer:
             L = km.num_layers
             dt = mx.bfloat16
 
-            # Load small stem & head tensors (~25 MB)
-            p_w, nb = km.read("patch_embedding.weight", "patch_embedding.weight", dt)
-            bytes_streamed += nb
-            p_b, nb = km.read("patch_embedding.bias", "patch_embedding.bias", dt)
-            bytes_streamed += nb
-            t1_w, nb = km.read("condition_embedder.time_embedder.linear_1.weight", "time_embedding.0.weight", dt)
-            t1_b, nb2 = km.read("condition_embedder.time_embedder.linear_1.bias", "time_embedding.0.bias", dt)
-            t2_w, nb3 = km.read("condition_embedder.time_embedder.linear_2.weight", "time_embedding.2.weight", dt)
-            t2_b, nb4 = km.read("condition_embedder.time_embedder.linear_2.bias", "time_embedding.2.bias", dt)
-            tp_w, nb5 = km.read("condition_embedder.time_proj.weight", "time_projection.1.weight", dt)
-            tp_b, nb6 = km.read("condition_embedder.time_proj.bias", "time_projection.1.bias", dt)
-            tx1_w, nb7 = km.read("condition_embedder.text_embedder.linear_1.weight", "text_embedding.0.weight", dt)
-            tx1_b, nb8 = km.read("condition_embedder.text_embedder.linear_1.bias", "text_embedding.0.bias", dt)
-            tx2_w, nb9 = km.read("condition_embedder.text_embedder.linear_2.weight", "text_embedding.2.weight", dt)
-            tx2_b, nb10 = km.read("condition_embedder.text_embedder.linear_2.bias", "text_embedding.2.bias", dt)
-            out_sst, nb11 = km.read("scale_shift_table", "head.modulation", mx.float32)
-            out_w, nb12 = km.read("proj_out.weight", "head.head.weight", dt)
-            out_b, nb13 = km.read("proj_out.bias", "head.head.bias", dt)
-            bytes_streamed += nb + nb2 + nb3 + nb4 + nb5 + nb6 + nb7 + nb8 + nb9 + nb10 + nb11 + nb12 + nb13
+            def _rs(dk: str, ck: str, t_dt: Any = dt) -> Any:
+                nonlocal bytes_streamed
+                a, nb_s = km.read(dk, ck, t_dt)
+                bytes_streamed += nb_s
+                return a
+
+            p_w, p_b = _rs("patch_embedding.weight", "patch_embedding.weight"), _rs("patch_embedding.bias", "patch_embedding.bias")
+            t1_w = _rs("condition_embedder.time_embedder.linear_1.weight", "time_embedding.0.weight")
+            t1_b = _rs("condition_embedder.time_embedder.linear_1.bias", "time_embedding.0.bias")
+            t2_w = _rs("condition_embedder.time_embedder.linear_2.weight", "time_embedding.2.weight")
+            t2_b = _rs("condition_embedder.time_embedder.linear_2.bias", "time_embedding.2.bias")
+            tp_w = _rs("condition_embedder.time_proj.weight", "time_projection.1.weight")
+            tp_b = _rs("condition_embedder.time_proj.bias", "time_projection.1.bias")
+            tx1_w = _rs("condition_embedder.text_embedder.linear_1.weight", "text_embedding.0.weight")
+            tx1_b = _rs("condition_embedder.text_embedder.linear_1.bias", "text_embedding.0.bias")
+            tx2_w = _rs("condition_embedder.text_embedder.linear_2.weight", "text_embedding.2.weight")
+            tx2_b = _rs("condition_embedder.text_embedder.linear_2.bias", "text_embedding.2.bias")
+            out_sst = _rs("scale_shift_table", "head.modulation", mx.float32)
+            out_w, out_b = _rs("proj_out.weight", "head.head.weight"), _rs("proj_out.bias", "head.head.bias")
 
             dim = int(p_w.shape[0])
             p_t, p_h, p_w_sz = self.patch_size
-            # Flatten 3D patchify conv into 1 GEMM (`[C * p_t * p_h * p_w, dim]`)
             patch_wT = p_w.reshape(dim, -1).T
-
-            # Plan resident vs mmap-streamed blocks
-            resident: Dict[int, Dict[str, Any]] = {}
-            if self.mode == "monolithic":
-                target_res = L
-            elif self.mode == "block_stream":
-                target_res = 0
-            else:
-                blk0, blk0_bytes = _load_fused_wan_block(km, 0, dt)
-                bytes_streamed += blk0_bytes
-                resident[0] = blk0
-                usable_b = max(0.0, self.memory_budget_mb - self.activation_reserve_mb) * 1024.0 * 1024.0
-                target_res = min(L, max(1, int(usable_b // max(1, blk0_bytes))))
-
-            for bi in range(len(resident), target_res):
-                b_dict, nb_blk = _load_fused_wan_block(km, bi, dt)
-                bytes_streamed += nb_blk
-                resident[bi] = b_dict
-
-            active_res_mb = float(mx.get_active_memory()) / (1024.0 * 1024.0) if hasattr(mx, "get_active_memory") else 0.0
 
             lat = initial_latents.astype(mx.float32)
             B, C, F_len, H_len, W_len = lat.shape
@@ -359,6 +376,23 @@ class MLXWanVideoStreamer:
             cos_half, sin_half = _build_wan_3d_rope(ppf, pph, ppw, dim // self.num_heads)
             enc_proj = _gelu_tanh(encoder_hidden_states.astype(dt) @ tx1_w.T + tx1_b) @ tx2_w.T + tx2_b
             mx.eval(cos_half, sin_half, enc_proj)
+
+            resident: Dict[int, Dict[str, Any]] = {}
+            if self.mode == "monolithic":
+                target_res = L
+            elif self.mode == "block_stream":
+                target_res = 0
+            else:
+                resident[0], blk0_bytes = _load_fused_wan_block(km, 0, dt, enc_proj, self.num_heads)
+                bytes_streamed += blk0_bytes
+                usable_b = max(0.0, self.memory_budget_mb - self.activation_reserve_mb) * 1024.0 * 1024.0
+                target_res = min(L, max(1, int(usable_b // max(1, blk0_bytes))))
+
+            for bi in range(len(resident), target_res):
+                resident[bi], nb_blk = _load_fused_wan_block(km, bi, dt, enc_proj, self.num_heads)
+                bytes_streamed += nb_blk
+
+            active_res_mb = float(mx.get_active_memory()) / (1024.0 * 1024.0) if hasattr(mx, "get_active_memory") else 0.0
 
             prev_d0: Optional[Any] = None
             cached_res: Optional[Any] = None
@@ -424,17 +458,11 @@ class MLXWanVideoStreamer:
                         mx.eval(cached_res)
                     h = h_cur
 
-                # Head norm + unpatchify -> velocity `v_pred`
                 out_mod = out_sst + temb.astype(mx.float32)[:, None, :]
-                shift_o = out_mod[:, 0:1, :]
-                scale_o = out_mod[:, 1:2, :]
-                h_out = (_layer_norm_fp32(h) * (1.0 + scale_o) + shift_o).astype(dt)
+                h_out = _get_compiled_mlx_ops()["adaln"](h, out_mod[:, 1:2, :], out_mod[:, 0:1, :])
                 v_patches = h_out @ out_w.T + out_b
-                v_5d = v_patches.reshape(B, ppf, pph, ppw, p_t, p_h, p_w_sz, C).transpose(0, 7, 1, 4, 2, 5, 3, 6)
-                v_pred = v_5d.reshape(B, C, F_len, H_len, W_len).astype(mx.float32)
-
-                dt_sigma = float(sigmas[step_i + 1]) - float(sigmas[step_i])
-                lat = lat + dt_sigma * v_pred
+                v_pred = v_patches.reshape(B, ppf, pph, ppw, p_t, p_h, p_w_sz, C).transpose(0, 7, 1, 4, 2, 5, 3, 6).reshape(B, C, F_len, H_len, W_len).astype(mx.float32)
+                lat = lat + (float(sigmas[step_i + 1]) - float(sigmas[step_i])) * v_pred
                 mx.eval(lat)
 
             wall = time.perf_counter() - t_start

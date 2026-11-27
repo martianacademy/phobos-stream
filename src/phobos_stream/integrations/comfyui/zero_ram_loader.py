@@ -69,7 +69,10 @@ def build_header_only_meta_state_dict(
         GGUFMMapLoader(path_obj) if str(path_obj).lower().endswith(".gguf") else MMapTensorLoader(path_obj)
     )
     with loader_ctx as loader:
-        raw_meta = dict(loader.header.get("__metadata__", {}) or {}) if isinstance(loader, MMapTensorLoader) else {}
+        if isinstance(loader, GGUFMMapLoader):
+            raw_meta = dict(loader.metadata)
+        else:
+            raw_meta = dict(loader.header.get("__metadata__", {}) or {})
         for key in loader.get_tensor_names():
             info = loader.header[key]
             shape = tuple(int(d) for d in info["shape"])
@@ -78,7 +81,8 @@ def build_header_only_meta_state_dict(
             numel = 1
             for d in shape:
                 numel *= d
-            if numel <= scalar_threshold_elems:
+            is_small_u8_cfg = str(info["dtype"]) == "U8" and numel <= 1_048_576
+            if numel <= scalar_threshold_elems or is_small_u8_cfg:
                 t = loader.read_torch_tensor(key, device="cpu")
             else:
                 t = torch.empty(shape, dtype=t_dtype, device="meta")
@@ -267,7 +271,7 @@ class PhobosZeroRAMLoaderNode:
         return {
             "required": {
                 "unet_name": (unet_list, {"default": unet_list[0]}),
-                "mode": (["mmap_stream", "hybrid_budget"], {"default": "mmap_stream"}),
+                "mode": (["mmap_stream", "hybrid_budget", "cpu_offload"], {"default": "mmap_stream"}),
                 "weight_dtype": (["default", "fp8_e4m3fn", "fp8_e5m2"], {"default": "default"}),
             },
             "optional": {

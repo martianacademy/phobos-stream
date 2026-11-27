@@ -66,8 +66,13 @@ def _skip_gguf_val(buf: mmap.mmap, vtype: int) -> Any:
 
 
 def dequantize_ggml_on_device(raw_u8_dev: Any, type_name: str, shape: Tuple[int, ...], out_dtype: Any) -> Any:
-    """Vectorized on-GPU (`cuda` / `mps` / `cpu`) GGML block dequantization into `out_dtype`."""
+    """Single-pass `nvcc` CUDA C++ or vectorized PyTorch GGML block dequantization into `out_dtype`."""
     import torch
+    from phobos_stream.storage.cuda_gguf_kernels import try_cuda_unpack_ggml
+
+    fast_out = try_cuda_unpack_ggml(raw_u8_dev, type_name, shape, out_dtype)
+    if fast_out is not None:
+        return fast_out
 
     n_elems = 1
     for d in shape:
@@ -86,30 +91,30 @@ def dequantize_ggml_on_device(raw_u8_dev: Any, type_name: str, shape: Tuple[int,
     if type_name == "Q8_0":
         # 34 bytes per 32 elements: [fp16 scale (2B) | 32 x int8 (32B)]
         blocks = raw_u8_dev.reshape(-1, 34)
-        scales = blocks[:, :2].contiguous().view(torch.float16).to(dtype=out_dtype)  # [N, 1]
-        qs = blocks[:, 2:].view(torch.int8).to(dtype=out_dtype)                      # [N, 32]
-        return (qs * scales).reshape(-1)[:n_elems].reshape(shape)
+        scales = blocks[:, :2].contiguous().view(torch.float16).to(torch.float32)    # [N, 1]
+        qs = blocks[:, 2:].view(torch.int8).to(torch.float32)                        # [N, 32]
+        return (qs * scales).reshape(-1)[:n_elems].reshape(shape).to(dtype=out_dtype)
 
     if type_name == "Q4_0":
         # 18 bytes per 32 elements: [fp16 scale (2B) | 16 x uint8 nibbles (16B)]
         blocks = raw_u8_dev.reshape(-1, 18)
-        scales = blocks[:, :2].contiguous().view(torch.float16).to(dtype=out_dtype)  # [N, 1]
+        scales = blocks[:, :2].contiguous().view(torch.float16).to(torch.float32)    # [N, 1]
         nib = blocks[:, 2:]                                                          # [N, 16]
         low = (nib & 0x0F).to(torch.int8) - 8
         high = (nib >> 4).to(torch.int8) - 8
-        qs = torch.cat([low, high], dim=1).to(dtype=out_dtype)
-        return (qs * scales).reshape(-1)[:n_elems].reshape(shape)
+        qs = torch.cat([low, high], dim=1).to(torch.float32)
+        return (qs * scales).reshape(-1)[:n_elems].reshape(shape).to(dtype=out_dtype)
 
     if type_name == "Q4_1":
         # 20 bytes per 32 elements: [fp16 d (2B) | fp16 m (2B) | 16 x uint8 nibbles (16B)]
         blocks = raw_u8_dev.reshape(-1, 20)
-        d = blocks[:, :2].contiguous().view(torch.float16).to(dtype=out_dtype)
-        m = blocks[:, 2:4].contiguous().view(torch.float16).to(dtype=out_dtype)
+        d = blocks[:, :2].contiguous().view(torch.float16).to(torch.float32)
+        m = blocks[:, 2:4].contiguous().view(torch.float16).to(torch.float32)
         nib = blocks[:, 4:]
-        low = (nib & 0x0F).to(dtype=out_dtype)
-        high = (nib >> 4).to(dtype=out_dtype)
+        low = (nib & 0x0F).to(torch.float32)
+        high = (nib >> 4).to(torch.float32)
         qs = torch.cat([low, high], dim=1)
-        return (qs * d + m).reshape(-1)[:n_elems].reshape(shape)
+        return (qs * d + m).reshape(-1)[:n_elems].reshape(shape).to(dtype=out_dtype)
 
     if type_name == "Q4_K":
         # 144 bytes per 256 elements: [fp16 d (2B) | fp16 dmin (2B) | scales (12B) | qs (128B)]
@@ -195,6 +200,7 @@ class GGUFMMapLoader:
             raise FileNotFoundError(f"GGUF file not found: {self.file_path}")
         self.file_obj: BinaryIO = open(self.file_path, "rb")
         self.mmap_obj = mmap.mmap(self.file_obj.fileno(), 0, access=mmap.ACCESS_READ)
+        self.metadata: Dict[str, str] = {}
         self.header, self.data_offset = self._parse_gguf_header()
 
     def _parse_gguf_header(self) -> Tuple[Dict[str, Dict[str, Any]], int]:
@@ -211,6 +217,8 @@ class GGUFMMapLoader:
             k = _read_gguf_str(self.mmap_obj)
             (vtype,) = struct.unpack("<I", self.mmap_obj.read(4))
             val = _skip_gguf_val(self.mmap_obj, vtype)
+            if isinstance(val, str):
+                self.metadata[k] = val
             if k == "general.alignment" and isinstance(val, int) and val > 0:
                 alignment = val
 
@@ -250,6 +258,20 @@ class GGUFMMapLoader:
     def get_tensor_byte_size(self, name: str) -> int:
         s, e = self.header[name]["data_offsets"]
         return int(e - s)
+
+    def read_raw_slice(self, name: str) -> Tuple[memoryview, str, Tuple[int, ...]]:
+        """Return zero-copy `(memoryview_u8, ggml_type_name, pt_shape)` without heap copies."""
+        meta = self.header[name]
+        s, e = meta["data_offsets"]
+        view = memoryview(self.mmap_obj)[self.data_offset + s : self.data_offset + e]
+        return view, str(meta["dtype"]), tuple(int(d) for d in meta["shape"])
+
+    def evict_page_cache(self, name: str) -> None:
+        """Advise OS kernel (`MADV_DONTNEED`) to drop clean `mmap` pages for `name`."""
+        from phobos_stream.streaming.budget_planner import advise_dontneed_mmap_range
+
+        s, e = self.header[name]["data_offsets"]
+        advise_dontneed_mmap_range(self.mmap_obj, self.data_offset + s, self.data_offset + e)
 
     def read_torch_tensor(
         self,

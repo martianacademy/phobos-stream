@@ -87,6 +87,20 @@ class MMapTensorLoader:
         start_rel, end_rel = self.header[name]["data_offsets"]
         return int(end_rel - start_rel)
 
+    def get_tensor_metadata(self, name: str) -> Dict[str, Any]:
+        """Return header metadata dictionary for `name`."""
+        if name not in self.header:
+            raise KeyError(f"Tensor '{name}' not found in {self.file_path.name}")
+        return self.header[name]
+
+    def evict_page_cache(self, name: str) -> None:
+        """Advise OS kernel (`MADV_DONTNEED`) to drop clean `mmap` pages for `name`."""
+        from phobos_stream.streaming.budget_planner import advise_dontneed_mmap_range
+
+        meta = self.get_tensor_metadata(name)
+        start_rel, end_rel = meta["data_offsets"]
+        advise_dontneed_mmap_range(self.mmap_obj, self.data_offset + int(start_rel), self.data_offset + int(end_rel))
+
     def read_raw_slice(self, name: str) -> Tuple[memoryview, str, Tuple[int, ...]]:
         """Return zero-copy `(memoryview, safetensors_dtype, shape)` for `name`."""
         if name not in self.header:

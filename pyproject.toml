@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "phobos-stream"
-version = "1.0.0"
-description = "Universal Zero-VRAM & Zero-RAM Video/Image Diffusion Streaming Engine (CUDA • MLX • MPS • ROCm • GGUF)"
+version = "1.1.0"
+description = "Universal Zero-VRAM & Zero-RAM Video, Audio-Video & Image Diffusion Streaming Engine (CUDA • MLX • MPS • ROCm • GGUF)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Martian Academy", email = "research@martian.academy" }]
-keywords = ["diffusion", "comfyui", "mlx", "zero-vram", "zero-ram", "gguf", "dit", "flux", "wan2.1", "hunyuan", "mmap", "offloading"]
+keywords = ["diffusion", "comfyui", "mlx", "zero-vram", "zero-ram", "gguf", "dit", "flux2", "ltx2", "wan2.2", "hunyuan", "mmap", "offloading"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",

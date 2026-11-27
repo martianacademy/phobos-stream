@@ -1,11 +1,11 @@
 """Universal hook-based block streamer for PyTorch Diffusion Transformers, T5/CLIP, & UNets."""
 
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple, Union
 
+from phobos_stream.storage.gguf_mmap_loader import GGUFMMapLoader
 from phobos_stream.storage.mmap_loader import MMapTensorLoader
 from phobos_stream.streaming.block_discovery import (
     KNOWN_BLOCK_CONTAINERS,
@@ -20,6 +20,11 @@ from phobos_stream.streaming.block_discovery import (
 from phobos_stream.streaming.attention_fastpath import PhobosAttentionFastpath
 from phobos_stream.streaming.budget_planner import BlockTier, HybridBudgetPlan, MemoryBudgetPlanner
 from phobos_stream.streaming.first_block_cache import FirstBlockResidualCache
+from phobos_stream.streaming.mmap_ring_prefetcher import (
+    MMapRingPrefetcher,
+    PackedGGUFShadow,
+    build_cpu_pinned_shadow,
+)
 
 
 class BlockStreamMode(str, Enum):
@@ -102,6 +107,7 @@ class TorchBlockStreamer:
         self._prefetch_stream: Optional[Any] = None
         self._inflight_events: Deque[Any] = deque()
         self._mmap_map: Dict[int, List[Tuple[str, bool, MMapTensorLoader, str, Any]]] = {}
+        self._mmap_ring: Optional[MMapRingPrefetcher] = None
         self._attached = False
 
     @property
@@ -169,6 +175,7 @@ class TorchBlockStreamer:
                 tiers = [BlockTier.NVME_MMAP] * len(self.blocks)
             else:
                 block_sizes = [self._estimate_block_bytes(pfx, blk, st_index) for pfx, blk in self.blocks]
+                cpu_sizes = [self._estimate_block_bytes(pfx, blk, st_index, for_cpu=True) for pfx, blk in self.blocks]
                 self.budget_plan = MemoryBudgetPlanner.plan_blocks(
                     block_sizes_bytes=block_sizes,
                     vram_budget_mb=self.vram_budget_mb,
@@ -176,6 +183,7 @@ class TorchBlockStreamer:
                     compute_device=self.compute_device,
                     has_mmap_backing=bool(st_index),
                     activation_reserve_mb=self.activation_reserve_mb,
+                    cpu_block_sizes_bytes=cpu_sizes,
                 )
                 tiers = list(self.budget_plan.tiers)
 
@@ -187,8 +195,14 @@ class TorchBlockStreamer:
                     (i for i, t in enumerate(self._effective_tiers) if i > p_idx and t == BlockTier.CPU_PINNED),
                     None,
                 )
+                first_post_probe_mmap = next(
+                    (i for i, t in enumerate(self._effective_tiers) if i > p_idx and t == BlockTier.NVME_MMAP),
+                    None,
+                )
                 if first_post_probe_cpu is not None and self._prefetch_stream is not None:
                     self.residual_cache._on_miss_callback = lambda: self._prefetch_cpu_block(first_post_probe_cpu)
+                elif first_post_probe_mmap is not None and self._mmap_ring is not None:
+                    self.residual_cache._on_miss_callback = lambda: self._mmap_ring.submit_prefetch(first_post_probe_mmap)
             if self.attn_fastpath is not None:
                 self.attn_fastpath.activate()
         except Exception:
@@ -205,16 +219,18 @@ class TorchBlockStreamer:
         blk_prefix: str,
         blk: Any,
         st_index: Dict[str, Tuple[MMapTensorLoader, str]],
+        for_cpu: bool = False,
     ) -> int:
         total = 0
         for rel_name, _, tensor_obj in iter_persistent_module_tensors(blk):
-            if tensor_obj.numel() > 0:
+            is_skeleton = getattr(tensor_obj, "is_meta", False) or tensor_obj.numel() == 0
+            resolved = lookup_safetensors_key(st_index, f"{blk_prefix}.{rel_name}") if st_index else None
+            if for_cpu and is_skeleton and resolved is not None and isinstance(resolved[0], GGUFMMapLoader):
+                total += resolved[0].get_tensor_byte_size(resolved[1])
+            elif tensor_obj.numel() > 0:
                 total += int(tensor_obj.numel() * tensor_obj.element_size())
-            else:
-                resolved = lookup_safetensors_key(st_index, f"{blk_prefix}.{rel_name}")
-                if resolved is not None:
-                    loader, real_key = resolved
-                    total += loader.get_tensor_byte_size(real_key)
+            elif resolved is not None:
+                total += resolved[0].get_tensor_byte_size(resolved[1])
         return max(1, total)
 
     def _place_non_block_stem_and_head(
@@ -295,32 +311,7 @@ class TorchBlockStreamer:
                 self._hooks.append(blk.register_forward_hook(self._make_gpu_resident_hook(idx)))
 
             elif tier == BlockTier.CPU_PINNED:
-                raw_items: List[Tuple[str, bool, Any]] = []
-                for rel_name, is_param, tensor_obj in iter_persistent_module_tensors(blk):
-                    if getattr(tensor_obj, "is_meta", False) or tensor_obj.numel() == 0:
-                        resolved = lookup_safetensors_key(st_index, f"{blk_prefix}.{rel_name}")
-                        if resolved is None:
-                            raise KeyError(f"Missing CPU-pinned tensor '{blk_prefix}.{rel_name}'.")
-                        loader, real_key = resolved
-                        cpu_t = loader.read_torch_tensor(real_key, device="cpu", target_dtype=tensor_obj.dtype)
-                    else:
-                        cpu_t = tensor_obj.data.detach().to("cpu")
-                    raw_items.append((rel_name, is_param, cpu_t))
-
-                if use_pin and len(raw_items) > 1:
-                    with ThreadPoolExecutor(max_workers=4) as pool:
-                        pinned_tensors = list(
-                            pool.map(lambda t: t.pin_memory() if not t.is_pinned() else t, [it[2] for it in raw_items])
-                        )
-                    shadow = [(it[0], it[1], pt) for it, pt in zip(raw_items, pinned_tensors)]
-                else:
-                    shadow = [
-                        (rel_name, is_param, cpu_t.pin_memory() if (use_pin and not cpu_t.is_pinned()) else cpu_t)
-                        for rel_name, is_param, cpu_t in raw_items
-                    ]
-                for rel_name, is_param, cpu_t in shadow:
-                    assign_tensor(blk, rel_name, cpu_t, is_param)
-                self._cpu_shadow[idx] = shadow
+                self._cpu_shadow[idx] = build_cpu_pinned_shadow(blk_prefix, blk, st_index, use_pin)
                 self._register_cpu_hooks(idx, blk, next_cpu_peer.get(idx))
 
             else:
@@ -337,7 +328,27 @@ class TorchBlockStreamer:
                     blk_entries.append((rel_name, is_param, loader, real_key, orig_dtype))
                     assign_tensor(blk, rel_name, torch.empty(0, dtype=orig_dtype, device="cpu"), is_param)
                 self._mmap_map[idx] = blk_entries
-                self._register_mmap_hooks(idx, blk)
+
+        if self._mmap_map:
+            self._mmap_ring = MMapRingPrefetcher(
+                self.compute_device,
+                self._mmap_map,
+                self._loaders,
+                pin_memory=self.pin_memory,
+                prefetch=self.prefetch,
+                ram_budget_mb=self.ram_budget_mb,
+            )
+            mmap_indices = sorted(self._mmap_map.keys())
+            next_mmap_peer = {
+                mmap_indices[p]: (mmap_indices[p + 1] if p + 1 < len(mmap_indices) else None)
+                for p in range(len(mmap_indices))
+            }
+            for m_idx in mmap_indices:
+                self._hooks.extend(
+                    self._mmap_ring.register_hooks(
+                        self, m_idx, self.blocks[m_idx][1], next_mmap_peer[m_idx], self._resolve_active_device
+                    )
+                )
 
     def _is_skipped_by_cache(self, idx: int) -> bool:
         return (
@@ -361,8 +372,12 @@ class TorchBlockStreamer:
             return
         with torch.cuda.stream(self._prefetch_stream):
             self._prefetch_cache[idx] = {
-                rel_name: cpu_t.to(self.compute_device, non_blocking=True)
-                for rel_name, _, cpu_t in self._cpu_shadow[idx]
+                rel_name: (
+                    sh_obj.to_device(self.compute_device, non_blocking=True)
+                    if isinstance(sh_obj, PackedGGUFShadow)
+                    else sh_obj.to(self.compute_device, non_blocking=True)
+                )
+                for rel_name, _, sh_obj in self._cpu_shadow[idx]
             }
 
     def _register_cpu_hooks(self, idx: int, blk: Any, next_peer_idx: Optional[int]) -> None:
@@ -386,18 +401,22 @@ class TorchBlockStreamer:
                 for dev_t in dev_map.values():
                     dev_t.record_stream(compute_stream)
             else:
+                nb_flag = target_dev.type == "cuda"
                 dev_map = {
-                    rel_name: cpu_t.to(target_dev, non_blocking=(target_dev.type == "cuda"))
-                    for rel_name, _, cpu_t in self._cpu_shadow[idx]
+                    rel_name: (
+                        sh_obj.to_device(target_dev, non_blocking=nb_flag)
+                        if isinstance(sh_obj, PackedGGUFShadow)
+                        else sh_obj.to(target_dev, non_blocking=nb_flag)
+                    )
+                    for rel_name, _, sh_obj in self._cpu_shadow[idx]
                 }
 
-            for rel_name, is_param, _ in self._cpu_shadow[idx]:
+            for rel_name, is_param, sh_obj in self._cpu_shadow[idx]:
                 dev_t = dev_map[rel_name]
                 assign_tensor(module, rel_name, dev_t, is_param)
-                self.bytes_streamed += dev_t.numel() * dev_t.element_size()
+                self.bytes_streamed += sh_obj.nbytes if isinstance(sh_obj, PackedGGUFShadow) else (dev_t.numel() * dev_t.element_size())
 
             if self._prefetch_stream is not None and target_dev == self.compute_device:
-                # Hold probe-block prefetch when residual cache is active until probe declares a miss.
                 is_probe = (
                     self.residual_cache is not None
                     and self.residual_cache.enabled
@@ -409,39 +428,17 @@ class TorchBlockStreamer:
         def _post_hook(module: Any, _inputs: Any, _output: Any) -> None:
             if self._is_skipped_by_cache(idx):
                 return
-            for rel_name, is_param, cpu_t in self._cpu_shadow[idx]:
-                assign_tensor(module, rel_name, cpu_t, is_param)
+            for rel_name, is_param, sh_obj in self._cpu_shadow[idx]:
+                placeholder = (
+                    torch.empty(0, dtype=sh_obj.out_dtype, device="cpu")
+                    if isinstance(sh_obj, PackedGGUFShadow)
+                    else sh_obj
+                )
+                assign_tensor(module, rel_name, placeholder, is_param)
             if self._prefetch_stream is not None and self.compute_device.type == "cuda":
                 ev = torch.cuda.Event()
                 ev.record(torch.cuda.current_stream(self.compute_device))
                 self._inflight_events.append(ev)
-            self.blocks_executed += 1
-
-        try:
-            self._hooks.append(blk.register_forward_pre_hook(_pre_hook, with_kwargs=True))
-        except TypeError:
-            self._hooks.append(blk.register_forward_pre_hook(lambda m, inp: _pre_hook(m, inp, None)))
-        self._hooks.append(blk.register_forward_hook(_post_hook))
-
-    def _register_mmap_hooks(self, idx: int, blk: Any) -> None:
-        import torch
-
-        def _pre_hook(module: Any, inputs: Any, kwargs: Optional[Dict[str, Any]] = None) -> None:
-            if self._is_skipped_by_cache(idx):
-                return
-            target_dev = self._resolve_active_device(inputs, kwargs)
-            if self._auto_device:
-                move_non_persistent_buffers(module, target_dev)
-            for rel_name, is_param, loader, real_key, orig_dtype in self._mmap_map[idx]:
-                loaded = loader.read_torch_tensor(real_key, device=str(target_dev), target_dtype=orig_dtype)
-                assign_tensor(module, rel_name, loaded, is_param)
-                self.bytes_streamed += loader.get_tensor_byte_size(real_key)
-
-        def _post_hook(module: Any, _inputs: Any, _output: Any) -> None:
-            if self._is_skipped_by_cache(idx):
-                return
-            for rel_name, is_param, _, _, orig_dtype in self._mmap_map[idx]:
-                assign_tensor(module, rel_name, torch.empty(0, dtype=orig_dtype, device="cpu"), is_param)
             self.blocks_executed += 1
 
         try:
@@ -456,6 +453,9 @@ class TorchBlockStreamer:
             self.attn_fastpath.deactivate()
         if self.residual_cache is not None:
             self.residual_cache.detach()
+        if self._mmap_ring is not None:
+            self._mmap_ring.close()
+            self._mmap_ring = None
         for h in self._hooks:
             h.remove()
         self._hooks.clear()
@@ -464,8 +464,9 @@ class TorchBlockStreamer:
 
         if restore_cpu_weights and self._cpu_shadow:
             for idx, (_, blk) in enumerate(self.blocks):
-                for rel_name, is_param, cpu_t in self._cpu_shadow.get(idx, []):
-                    assign_tensor(blk, rel_name, cpu_t, is_param)
+                for rel_name, is_param, sh_obj in self._cpu_shadow.get(idx, []):
+                    restored = sh_obj.to_device("cpu", non_blocking=False) if isinstance(sh_obj, PackedGGUFShadow) else sh_obj
+                    assign_tensor(blk, rel_name, restored, is_param)
 
         self._cpu_shadow.clear()
         self._mmap_map.clear()
