@@ -1,21 +1,56 @@
 {
-  "last_node_id": 15,
-  "last_link_id": 17,
+  "id": "00000000-0000-0000-0000-000000000000",
+  "revision": 0,
+  "last_node_id": 316,
+  "last_link_id": 18,
   "nodes": [
     {
-      "id": 1,
+      "id": 301,
       "type": "CLIPLoader",
       "pos": [
-        40,
-        60
+        60,
+        80
       ],
       "size": [
-        360,
-        106
+        420,
+        130
       ],
-      "inputs": [],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "clip_name",
+          "name": "clip_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "clip_name"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "type",
+          "name": "type",
+          "type": "COMBO",
+          "widget": {
+            "name": "type"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "device",
+          "name": "device",
+          "shape": 7,
+          "type": "COMBO",
+          "widget": {
+            "name": "device"
+          },
+          "link": null
+        }
+      ],
       "outputs": [
         {
+          "localized_name": "CLIP",
           "name": "CLIP",
           "type": "CLIP",
           "links": [
@@ -23,6 +58,9 @@
           ]
         }
       ],
+      "properties": {
+        "Node name for S&R": "CLIPLoader"
+      },
       "widgets_values": [
         "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
         "wan",
@@ -30,25 +68,59 @@
       ]
     },
     {
-      "id": 2,
+      "id": 302,
       "type": "PhobosCLIPStreamPatcher",
       "pos": [
-        430,
-        60
+        520,
+        80
       ],
       "size": [
-        340,
-        106
+        370,
+        135
       ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
       "inputs": [
         {
+          "localized_name": "clip",
           "name": "clip",
           "type": "CLIP",
           "link": 1
+        },
+        {
+          "localized_name": "mode",
+          "name": "mode",
+          "type": "COMBO",
+          "widget": {
+            "name": "mode"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "vram_budget_mb",
+          "name": "vram_budget_mb",
+          "shape": 7,
+          "type": "FLOAT",
+          "widget": {
+            "name": "vram_budget_mb"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "evict_after_encode",
+          "name": "evict_after_encode",
+          "shape": 7,
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "evict_after_encode"
+          },
+          "link": null
         }
       ],
       "outputs": [
         {
+          "localized_name": "clip",
           "name": "clip",
           "type": "CLIP",
           "links": [
@@ -57,32 +129,49 @@
           ]
         }
       ],
+      "properties": {
+        "Node name for S&R": "PhobosCLIPStreamPatcher"
+      },
       "widgets_values": [
         "cpu_offload",
-        0.0,
+        0,
         true
       ]
     },
     {
-      "id": 3,
+      "id": 303,
       "type": "CLIPTextEncode",
       "pos": [
-        810,
-        40
+        930,
+        70
       ],
       "size": [
-        380,
-        120
+        420,
+        145
       ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
       "inputs": [
         {
+          "localized_name": "clip",
           "name": "clip",
           "type": "CLIP",
           "link": 2
+        },
+        {
+          "localized_name": "text",
+          "name": "text",
+          "type": "STRING",
+          "widget": {
+            "name": "text"
+          },
+          "link": null
         }
       ],
       "outputs": [
         {
+          "localized_name": "CONDITIONING",
           "name": "CONDITIONING",
           "type": "CONDITIONING",
           "links": [
@@ -91,30 +180,47 @@
           ]
         }
       ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
       "widgets_values": [
-        "Sweeping aerial drone shot flying low through a dramatic red sandstone canyon on Mars at golden sunset, sunbeams piercing swirling crimson dust plumes above a futuristic pressurized glass research outpost."
+        "Sweeping aerial drone shot flying low through a dramatic red sandstone canyon on Mars at golden sunset, sunbeams piercing swirling crimson dust plumes above a pressurized glass research outpost."
       ]
     },
     {
-      "id": 4,
+      "id": 304,
       "type": "CLIPTextEncode",
       "pos": [
-        810,
-        190
+        930,
+        240
       ],
       "size": [
-        380,
-        90
+        420,
+        105
       ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
       "inputs": [
         {
+          "localized_name": "clip",
           "name": "clip",
           "type": "CLIP",
           "link": 3
+        },
+        {
+          "localized_name": "text",
+          "name": "text",
+          "type": "STRING",
+          "widget": {
+            "name": "text"
+          },
+          "link": null
         }
       ],
       "outputs": [
         {
+          "localized_name": "CONDITIONING",
           "name": "CONDITIONING",
           "type": "CONDITIONING",
           "links": [
@@ -123,24 +229,119 @@
           ]
         }
       ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
       "widgets_values": [
         "blurry, overexposed, static frame, low quality, distorted, watermark"
       ]
     },
     {
-      "id": 5,
+      "id": 305,
       "type": "PhobosZeroRAMLoader",
       "pos": [
-        40,
-        220
+        60,
+        245
       ],
       "size": [
-        360,
-        240
+        420,
+        345
       ],
-      "inputs": [],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "unet_name",
+          "name": "unet_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "unet_name"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "mode",
+          "name": "mode",
+          "type": "COMBO",
+          "widget": {
+            "name": "mode"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "weight_dtype",
+          "name": "weight_dtype",
+          "type": "COMBO",
+          "widget": {
+            "name": "weight_dtype"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "vram_budget_mb",
+          "name": "vram_budget_mb",
+          "shape": 7,
+          "type": "FLOAT",
+          "widget": {
+            "name": "vram_budget_mb"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "ram_budget_mb",
+          "name": "ram_budget_mb",
+          "shape": 7,
+          "type": "FLOAT",
+          "widget": {
+            "name": "ram_budget_mb"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "cache_rel_l1_thresh",
+          "name": "cache_rel_l1_thresh",
+          "shape": 7,
+          "type": "FLOAT",
+          "widget": {
+            "name": "cache_rel_l1_thresh"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "cache_warmup_steps",
+          "name": "cache_warmup_steps",
+          "shape": 7,
+          "type": "INT",
+          "widget": {
+            "name": "cache_warmup_steps"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "cache_max_consecutive_skips",
+          "name": "cache_max_consecutive_skips",
+          "shape": 7,
+          "type": "INT",
+          "widget": {
+            "name": "cache_max_consecutive_skips"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "attention_mode",
+          "name": "attention_mode",
+          "shape": 7,
+          "type": "COMBO",
+          "widget": {
+            "name": "attention_mode"
+          },
+          "link": null
+        }
+      ],
       "outputs": [
         {
+          "localized_name": "model",
           "name": "model",
           "type": "MODEL",
           "links": [
@@ -148,32 +349,127 @@
           ]
         }
       ],
+      "properties": {
+        "Node name for S&R": "PhobosZeroRAMLoader"
+      },
       "widgets_values": [
         "wan2.2_t2v_high_noise_14B_fp16.safetensors",
         "mmap_stream",
         "default",
-        0.0,
-        0.0,
-        0.0,
+        0,
+        0,
+        0,
         2,
         2,
         "auto"
       ]
     },
     {
-      "id": 6,
+      "id": 306,
       "type": "PhobosZeroRAMLoader",
       "pos": [
-        40,
-        490
+        60,
+        625
       ],
       "size": [
-        360,
-        240
+        420,
+        345
       ],
-      "inputs": [],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "unet_name",
+          "name": "unet_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "unet_name"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "mode",
+          "name": "mode",
+          "type": "COMBO",
+          "widget": {
+            "name": "mode"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "weight_dtype",
+          "name": "weight_dtype",
+          "type": "COMBO",
+          "widget": {
+            "name": "weight_dtype"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "vram_budget_mb",
+          "name": "vram_budget_mb",
+          "shape": 7,
+          "type": "FLOAT",
+          "widget": {
+            "name": "vram_budget_mb"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "ram_budget_mb",
+          "name": "ram_budget_mb",
+          "shape": 7,
+          "type": "FLOAT",
+          "widget": {
+            "name": "ram_budget_mb"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "cache_rel_l1_thresh",
+          "name": "cache_rel_l1_thresh",
+          "shape": 7,
+          "type": "FLOAT",
+          "widget": {
+            "name": "cache_rel_l1_thresh"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "cache_warmup_steps",
+          "name": "cache_warmup_steps",
+          "shape": 7,
+          "type": "INT",
+          "widget": {
+            "name": "cache_warmup_steps"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "cache_max_consecutive_skips",
+          "name": "cache_max_consecutive_skips",
+          "shape": 7,
+          "type": "INT",
+          "widget": {
+            "name": "cache_max_consecutive_skips"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "attention_mode",
+          "name": "attention_mode",
+          "shape": 7,
+          "type": "COMBO",
+          "widget": {
+            "name": "attention_mode"
+          },
+          "link": null
+        }
+      ],
       "outputs": [
         {
+          "localized_name": "model",
           "name": "model",
           "type": "MODEL",
           "links": [
@@ -181,38 +477,55 @@
           ]
         }
       ],
+      "properties": {
+        "Node name for S&R": "PhobosZeroRAMLoader"
+      },
       "widgets_values": [
         "wan2.2_t2v_low_noise_14B_fp16.safetensors",
         "mmap_stream",
         "default",
-        0.0,
-        0.0,
-        0.0,
+        0,
+        0,
+        0,
         2,
         2,
         "auto"
       ]
     },
     {
-      "id": 7,
+      "id": 307,
       "type": "ModelSamplingSD3",
       "pos": [
-        430,
-        260
+        520,
+        300
       ],
       "size": [
-        240,
-        58
+        260,
+        82
       ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
       "inputs": [
         {
+          "localized_name": "model",
           "name": "model",
           "type": "MODEL",
           "link": 4
+        },
+        {
+          "localized_name": "shift",
+          "name": "shift",
+          "type": "FLOAT",
+          "widget": {
+            "name": "shift"
+          },
+          "link": null
         }
       ],
       "outputs": [
         {
+          "localized_name": "MODEL",
           "name": "MODEL",
           "type": "MODEL",
           "links": [
@@ -220,55 +533,68 @@
           ]
         }
       ],
+      "properties": {
+        "Node name for S&R": "ModelSamplingSD3"
+      },
       "widgets_values": [
-        5.0
+        5
       ]
     },
     {
-      "id": 8,
-      "type": "ModelSamplingSD3",
-      "pos": [
-        430,
-        530
-      ],
-      "size": [
-        240,
-        58
-      ],
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 5
-        }
-      ],
-      "outputs": [
-        {
-          "name": "MODEL",
-          "type": "MODEL",
-          "links": [
-            10
-          ]
-        }
-      ],
-      "widgets_values": [
-        5.0
-      ]
-    },
-    {
-      "id": 9,
+      "id": 308,
       "type": "EmptyHunyuanLatentVideo",
       "pos": [
-        430,
-        360
+        520,
+        430
       ],
       "size": [
         300,
-        130
+        165
       ],
-      "inputs": [],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "width",
+          "name": "width",
+          "type": "INT",
+          "widget": {
+            "name": "width"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "height",
+          "name": "height",
+          "type": "INT",
+          "widget": {
+            "name": "height"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "length",
+          "name": "length",
+          "type": "INT",
+          "widget": {
+            "name": "length"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "batch_size",
+          "name": "batch_size",
+          "type": "INT",
+          "widget": {
+            "name": "batch_size"
+          },
+          "link": null
+        }
+      ],
       "outputs": [
         {
+          "localized_name": "LATENT",
           "name": "LATENT",
           "type": "LATENT",
           "links": [
@@ -276,6 +602,9 @@
           ]
         }
       ],
+      "properties": {
+        "Node name for S&R": "EmptyHunyuanLatentVideo"
+      },
       "widgets_values": [
         832,
         480,
@@ -284,40 +613,177 @@
       ]
     },
     {
-      "id": 10,
+      "id": 309,
+      "type": "ModelSamplingSD3",
+      "pos": [
+        520,
+        660
+      ],
+      "size": [
+        260,
+        82
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "model",
+          "name": "model",
+          "type": "MODEL",
+          "link": 5
+        },
+        {
+          "localized_name": "shift",
+          "name": "shift",
+          "type": "FLOAT",
+          "widget": {
+            "name": "shift"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "MODEL",
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            10
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ModelSamplingSD3"
+      },
+      "widgets_values": [
+        5
+      ]
+    },
+    {
+      "id": 310,
       "type": "KSamplerAdvanced",
       "pos": [
-        810,
-        330
+        880,
+        380
       ],
       "size": [
         330,
-        334
+        380
       ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
       "inputs": [
         {
+          "localized_name": "model",
           "name": "model",
           "type": "MODEL",
           "link": 6
         },
         {
+          "localized_name": "positive",
           "name": "positive",
           "type": "CONDITIONING",
           "link": 7
         },
         {
+          "localized_name": "negative",
           "name": "negative",
           "type": "CONDITIONING",
           "link": 8
         },
         {
+          "localized_name": "latent_image",
           "name": "latent_image",
           "type": "LATENT",
           "link": 9
+        },
+        {
+          "localized_name": "add_noise",
+          "name": "add_noise",
+          "type": "COMBO",
+          "widget": {
+            "name": "add_noise"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "noise_seed",
+          "name": "noise_seed",
+          "type": "INT",
+          "widget": {
+            "name": "noise_seed"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "steps",
+          "name": "steps",
+          "type": "INT",
+          "widget": {
+            "name": "steps"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "cfg",
+          "name": "cfg",
+          "type": "FLOAT",
+          "widget": {
+            "name": "cfg"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "sampler_name",
+          "name": "sampler_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "sampler_name"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "scheduler",
+          "name": "scheduler",
+          "type": "COMBO",
+          "widget": {
+            "name": "scheduler"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "start_at_step",
+          "name": "start_at_step",
+          "type": "INT",
+          "widget": {
+            "name": "start_at_step"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "end_at_step",
+          "name": "end_at_step",
+          "type": "INT",
+          "widget": {
+            "name": "end_at_step"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "return_with_leftover_noise",
+          "name": "return_with_leftover_noise",
+          "type": "COMBO",
+          "widget": {
+            "name": "return_with_leftover_noise"
+          },
+          "link": null
         }
       ],
       "outputs": [
         {
+          "localized_name": "LATENT",
           "name": "LATENT",
           "type": "LATENT",
           "links": [
@@ -325,10 +791,13 @@
           ]
         }
       ],
+      "properties": {
+        "Node name for S&R": "KSamplerAdvanced"
+      },
       "widgets_values": [
         "enable",
         20261127,
-        "fixed",
+        "randomize",
         20,
         3.5,
         "euler",
@@ -339,40 +808,129 @@
       ]
     },
     {
-      "id": 11,
+      "id": 311,
       "type": "KSamplerAdvanced",
       "pos": [
-        1180,
-        330
+        1250,
+        380
       ],
       "size": [
         330,
-        334
+        380
       ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
       "inputs": [
         {
+          "localized_name": "model",
           "name": "model",
           "type": "MODEL",
           "link": 10
         },
         {
+          "localized_name": "positive",
           "name": "positive",
           "type": "CONDITIONING",
           "link": 11
         },
         {
+          "localized_name": "negative",
           "name": "negative",
           "type": "CONDITIONING",
           "link": 12
         },
         {
+          "localized_name": "latent_image",
           "name": "latent_image",
           "type": "LATENT",
           "link": 13
+        },
+        {
+          "localized_name": "add_noise",
+          "name": "add_noise",
+          "type": "COMBO",
+          "widget": {
+            "name": "add_noise"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "noise_seed",
+          "name": "noise_seed",
+          "type": "INT",
+          "widget": {
+            "name": "noise_seed"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "steps",
+          "name": "steps",
+          "type": "INT",
+          "widget": {
+            "name": "steps"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "cfg",
+          "name": "cfg",
+          "type": "FLOAT",
+          "widget": {
+            "name": "cfg"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "sampler_name",
+          "name": "sampler_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "sampler_name"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "scheduler",
+          "name": "scheduler",
+          "type": "COMBO",
+          "widget": {
+            "name": "scheduler"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "start_at_step",
+          "name": "start_at_step",
+          "type": "INT",
+          "widget": {
+            "name": "start_at_step"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "end_at_step",
+          "name": "end_at_step",
+          "type": "INT",
+          "widget": {
+            "name": "end_at_step"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "return_with_leftover_noise",
+          "name": "return_with_leftover_noise",
+          "type": "COMBO",
+          "widget": {
+            "name": "return_with_leftover_noise"
+          },
+          "link": null
         }
       ],
       "outputs": [
         {
+          "localized_name": "LATENT",
           "name": "LATENT",
           "type": "LATENT",
           "links": [
@@ -380,10 +938,13 @@
           ]
         }
       ],
+      "properties": {
+        "Node name for S&R": "KSamplerAdvanced"
+      },
       "widgets_values": [
         "disable",
         20261127,
-        "fixed",
+        "randomize",
         20,
         3.5,
         "euler",
@@ -394,19 +955,33 @@
       ]
     },
     {
-      "id": 12,
+      "id": 312,
       "type": "VAELoader",
       "pos": [
-        1180,
-        220
+        1390,
+        110
       ],
       "size": [
-        330,
-        58
+        310,
+        85
       ],
-      "inputs": [],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "vae_name",
+          "name": "vae_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "vae_name"
+          },
+          "link": null
+        }
+      ],
       "outputs": [
         {
+          "localized_name": "VAE",
           "name": "VAE",
           "type": "VAE",
           "links": [
@@ -414,28 +989,36 @@
           ]
         }
       ],
+      "properties": {
+        "Node name for S&R": "VAELoader"
+      },
       "widgets_values": [
         "wan_2.1_vae.safetensors"
       ]
     },
     {
-      "id": 13,
+      "id": 313,
       "type": "VAEDecode",
       "pos": [
-        1550,
-        260
+        1620,
+        250
       ],
       "size": [
-        210,
-        46
+        220,
+        82
       ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
       "inputs": [
         {
+          "localized_name": "samples",
           "name": "samples",
           "type": "LATENT",
           "link": 14
         },
         {
+          "localized_name": "vae",
           "name": "vae",
           "type": "VAE",
           "link": 15
@@ -443,27 +1026,37 @@
       ],
       "outputs": [
         {
+          "localized_name": "IMAGE",
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            16
+            16,
+            17
           ]
         }
-      ]
+      ],
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": []
     },
     {
-      "id": 14,
-      "type": "CreateVideo",
+      "id": 314,
+      "type": "PreviewImage",
       "pos": [
-        1550,
-        350
+        1880,
+        80
       ],
       "size": [
-        260,
-        78
+        450,
+        340
       ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
       "inputs": [
         {
+          "localized_name": "images",
           "name": "images",
           "type": "IMAGE",
           "link": 16
@@ -471,36 +1064,141 @@
       ],
       "outputs": [
         {
-          "name": "VIDEO",
-          "type": "VIDEO",
-          "links": [
-            17
-          ]
+          "localized_name": "images",
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
         }
       ],
-      "widgets_values": [
-        16.0
-      ]
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
     },
     {
-      "id": 15,
-      "type": "SaveVideo",
+      "id": 315,
+      "type": "CreateVideo",
       "pos": [
-        1550,
-        470
+        1880,
+        460
       ],
       "size": [
         280,
-        160
+        100
       ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
       "inputs": [
         {
-          "name": "video",
-          "type": "VIDEO",
+          "localized_name": "images",
+          "name": "images",
+          "type": "IMAGE",
           "link": 17
+        },
+        {
+          "localized_name": "audio",
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "localized_name": "fps",
+          "name": "fps",
+          "type": "FLOAT",
+          "widget": {
+            "name": "fps"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "bit_depth",
+          "name": "bit_depth",
+          "shape": 7,
+          "type": "INT",
+          "widget": {
+            "name": "bit_depth"
+          },
+          "link": null
         }
       ],
-      "outputs": [],
+      "outputs": [
+        {
+          "localized_name": "VIDEO",
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            18
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CreateVideo"
+      },
+      "widgets_values": [
+        16,
+        8
+      ]
+    },
+    {
+      "id": 316,
+      "type": "SaveVideo",
+      "pos": [
+        1880,
+        600
+      ],
+      "size": [
+        340,
+        160
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "video",
+          "name": "video",
+          "type": "VIDEO",
+          "link": 18
+        },
+        {
+          "localized_name": "filename_prefix",
+          "name": "filename_prefix",
+          "type": "STRING",
+          "widget": {
+            "name": "filename_prefix"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "format",
+          "name": "format",
+          "type": "COMBO",
+          "widget": {
+            "name": "format"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "codec",
+          "name": "codec",
+          "type": "COMBO",
+          "widget": {
+            "name": "codec"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "video",
+          "name": "video",
+          "type": "VIDEO",
+          "links": null
+        }
+      ],
+      "properties": {},
       "widgets_values": [
         "video/Phobos_Wan22_Dual14B",
         "auto",
@@ -511,160 +1209,157 @@
   "links": [
     [
       1,
-      1,
+      301,
       0,
-      2,
+      302,
       0,
       "CLIP"
     ],
     [
       2,
-      2,
+      302,
       0,
+      303,
+      0,
+      "CLIP"
+    ],
+    [
       3,
+      302,
       0,
-      "CLIP"
-    ],
-    [
-      3,
-      2,
-      0,
-      4,
+      304,
       0,
       "CLIP"
     ],
     [
       4,
-      5,
+      305,
       0,
-      7,
+      307,
       0,
       "MODEL"
     ],
     [
       5,
-      6,
+      306,
       0,
-      8,
-      0,
-      "MODEL"
-    ],
-    [
-      6,
-      7,
-      0,
-      10,
+      309,
       0,
       "MODEL"
     ],
     [
-      7,
-      3,
+      6,
+      307,
       0,
-      10,
+      310,
+      0,
+      "MODEL"
+    ],
+    [
+      7,
+      303,
+      0,
+      310,
       1,
       "CONDITIONING"
     ],
     [
       8,
-      4,
+      304,
       0,
-      10,
+      310,
       2,
       "CONDITIONING"
     ],
     [
       9,
-      9,
+      308,
       0,
-      10,
+      310,
       3,
       "LATENT"
     ],
     [
       10,
-      8,
+      309,
       0,
-      11,
+      311,
       0,
       "MODEL"
     ],
     [
       11,
-      3,
+      303,
       0,
-      11,
+      311,
       1,
       "CONDITIONING"
     ],
     [
       12,
-      4,
+      304,
       0,
-      11,
+      311,
       2,
       "CONDITIONING"
     ],
     [
       13,
-      10,
+      310,
       0,
-      11,
+      311,
       3,
       "LATENT"
     ],
     [
       14,
-      11,
+      311,
       0,
-      13,
+      313,
       0,
       "LATENT"
     ],
     [
       15,
-      12,
+      312,
       0,
-      13,
+      313,
       1,
       "VAE"
     ],
     [
       16,
-      13,
+      313,
       0,
-      14,
+      314,
       0,
       "IMAGE"
     ],
     [
       17,
-      14,
+      313,
       0,
-      15,
+      315,
+      0,
+      "IMAGE"
+    ],
+    [
+      18,
+      315,
+      0,
+      316,
       0,
       "VIDEO"
     ]
   ],
-  "groups": [
-    {
-      "title": "PhobosStream Zero-RAM Wan2.2-T2V-A14B (57.2 GB Dual High+Low 14B MoE in 5.3 GiB VRAM)",
-      "bounding": [
-        20,
-        10,
-        1880,
-        740
-      ],
-      "color": "#0EA5E9"
-    }
-  ],
+  "groups": [],
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.85,
+      "scale": 0.4961538461538461,
       "offset": [
-        40,
-        40
+        433.33333333333326,
+        597.5968992248062
       ]
     }
   },

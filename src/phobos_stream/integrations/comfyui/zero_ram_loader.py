@@ -253,13 +253,20 @@ def load_comfy_unet_zero_ram(
 def _ensure_gguf_registered_and_list() -> list[str]:
     if COMFY_NATIVE_AVAILABLE and folder_paths is not None:
         try:
+            if hasattr(folder_paths, "supported_pt_extensions") and isinstance(folder_paths.supported_pt_extensions, set):
+                folder_paths.supported_pt_extensions.add(".gguf")
             for key in ("diffusion_models", "unet"):
                 entry = folder_paths.folder_names_and_paths.get(key)
                 if entry and len(entry) >= 2 and isinstance(entry[1], set):
                     entry[1].add(".gguf")
+            if hasattr(folder_paths, "filename_list_cache"):
+                folder_paths.filename_list_cache.clear()
         except Exception:
             pass
     return get_comfy_filenames("diffusion_models", ["hunyuan_video_t2v_720p_bf16.safetensors"])
+
+
+_ensure_gguf_registered_and_list()
 
 
 class PhobosZeroRAMLoaderNode:
