@@ -70,6 +70,10 @@ class GenerationConfig(BaseModel):
         le=0.5,
         description="Optional TeaCache / First-Block Residual Cache relative L1 threshold (0.0 = lossless)",
     )
+    input_image: Optional[str] = Field(
+        default=None,
+        description="Optional input image path, URL, or base64 string for Image-to-Video (I2V) generation",
+    )
 
 
 class PipelineMetrics(BaseModel):

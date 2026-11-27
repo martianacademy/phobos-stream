@@ -3,6 +3,7 @@
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
+from phobos_stream.storage.gguf_mmap_loader import GGUFMMapLoader
 from phobos_stream.storage.mmap_loader import MMapTensorLoader
 
 
@@ -27,6 +28,7 @@ KNOWN_BLOCK_CONTAINERS: Set[str] = {
 
 STRIP_MODEL_PREFIXES: Tuple[str, ...] = (
     "model.diffusion_model.",
+    "model.model.",
     "diffusion_model.",
     "transformer.",
     "unet.",
@@ -91,19 +93,34 @@ def iter_persistent_module_tensors(mod: Any) -> List[Tuple[str, bool, Any]]:
 
 def build_safetensors_index(
     paths: Sequence[Path],
-) -> Tuple[List[MMapTensorLoader], Dict[str, Tuple[MMapTensorLoader, str]]]:
-    """Open `.safetensors` files via `MMapTensorLoader` and build a normalized key lookup map."""
-    loaders: List[MMapTensorLoader] = []
-    index: Dict[str, Tuple[MMapTensorLoader, str]] = {}
+    key_remap: Optional[Dict[str, str]] = None,
+) -> Tuple[List[Any], Dict[str, Tuple[Any, str]]]:
+    """Open `.safetensors` or `.gguf` files via zero-copy `mmap` and build a normalized key lookup map."""
+    loaders: List[Any] = []
+    index: Dict[str, Tuple[Any, str]] = {}
+    raw_lookup: Dict[str, Tuple[Any, str]] = {}
     try:
         for path in paths:
-            loader = MMapTensorLoader(path)
+            loader: Any = (
+                GGUFMMapLoader(path) if str(path).lower().endswith(".gguf") else MMapTensorLoader(path)
+            )
             loaders.append(loader)
             for raw_key in loader.get_tensor_names():
-                index[raw_key] = (loader, raw_key)
+                entry = (loader, raw_key)
+                raw_lookup[raw_key] = entry
+                index[raw_key] = entry
+                if raw_key.endswith(".scale"):
+                    index.setdefault(f"{raw_key[:-6]}.weight", entry)
                 for prefix in STRIP_MODEL_PREFIXES:
                     if raw_key.startswith(prefix):
-                        index.setdefault(raw_key[len(prefix) :], (loader, raw_key))
+                        stripped = raw_key[len(prefix) :]
+                        index.setdefault(stripped, entry)
+                        if stripped.endswith(".scale"):
+                            index.setdefault(f"{stripped[:-6]}.weight", entry)
+        if key_remap:
+            for model_key, orig_raw_key in key_remap.items():
+                if orig_raw_key in raw_lookup:
+                    index[model_key] = raw_lookup[orig_raw_key]
     except Exception:
         for loader in loaders:
             loader.close()

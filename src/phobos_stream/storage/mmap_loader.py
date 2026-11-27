@@ -139,6 +139,12 @@ class MMapTensorLoader:
         elif dtype_str == "F32":
             raw_f32 = np.frombuffer(tensor_bytes, dtype=np.float32).copy().reshape(shape)
             tensor = torch.from_numpy(raw_f32)
+        elif dtype_str == "F8_E4M3" and hasattr(torch, "float8_e4m3fn"):
+            raw_u8 = np.frombuffer(tensor_bytes, dtype=np.uint8).copy().reshape(shape)
+            tensor = torch.from_numpy(raw_u8).view(torch.float8_e4m3fn)
+        elif dtype_str == "F8_E5M2" and hasattr(torch, "float8_e5m2"):
+            raw_u8 = np.frombuffer(tensor_bytes, dtype=np.uint8).copy().reshape(shape)
+            tensor = torch.from_numpy(raw_u8).view(torch.float8_e5m2)
         elif dtype_str in ("F8_E4M3", "F8_E5M2"):
             decoded = self.read_tensor(name, copy=False)
             tensor = torch.from_numpy(decoded)

@@ -16,6 +16,28 @@ from __future__ import annotations
 from typing import Any, Callable, Optional
 
 
+def _is_sage2_version(ver: str) -> bool:
+    """Accept ONLY compiled `sageattention >= 2.0` (`66.7 dB` PSNR); block `1.x` Triton (`23.95 dB`)."""
+    head = (ver or "").strip().split(".", 1)[0]
+    digits = "".join(ch for ch in head if ch.isdigit())
+    return bool(digits) and int(digits) >= 2
+
+
+def _probe_sageattention2() -> Optional[Callable[..., Any]]:
+    try:
+        import sageattention  # type: ignore
+
+        if not _is_sage2_version(str(getattr(sageattention, "__version__", "0.0"))):
+            return None
+        fn = getattr(sageattention, "sageattn", None)
+        return fn if callable(fn) else None
+    except Exception:
+        return None
+
+
+_SAGE2_FN: Optional[Callable[..., Any]] = _probe_sageattention2()
+
+
 def query_chunked_sdpa(
     sdpa_fn: Callable[..., Any],
     query: Any,
@@ -67,12 +89,13 @@ class PhobosAttentionFastpath:
         mode: str = "auto",
         query_chunk_size: int = 8192,
     ) -> None:
-        if mode not in ("stock", "auto", "chunked_sdpa"):
-            raise ValueError(f"Invalid attention mode '{mode}'. Expected stock|auto|chunked_sdpa.")
+        if mode not in ("stock", "auto", "chunked_sdpa", "sage2"):
+            raise ValueError(f"Invalid attention mode '{mode}'. Expected stock|auto|chunked_sdpa|sage2.")
         self.mode = mode
         self.query_chunk_size = int(query_chunk_size)
         self.chunked_calls: int = 0
         self.fp16_fastpath_calls: int = 0
+        self.sage2_calls: int = 0
         self.passthrough_calls: int = 0
         self._active = False
 
@@ -153,7 +176,31 @@ class PhobosAttentionFastpath:
             restore_bf16 = True
             self.fp16_fastpath_calls += 1
 
-        # 2. Lossless query-chunked SDPA on non-SM80+ devices (MPS, <SM80 CUDA, CPU) or explicit mode
+        # 2. Compiled SageAttention 2.2+ (`>= 2.0`, SM80+) fastpath for long-video 3D self-attention
+        sage_fn = _SAGE2_FN
+        can_sage2 = (
+            sage_fn is not None
+            and is_cuda
+            and sm_major >= 8
+            and attn_mask is None
+            and dropout_p == 0.0
+            and int(q_in.shape[-1]) in (64, 128)
+            and q_in.dtype in (torch.float16, torch.bfloat16)
+            and (self.mode == "sage2" or (self.mode == "auto" and int(q_in.shape[-2]) >= 4096))
+        )
+        if can_sage2 and sage_fn is not None:
+            self.sage2_calls += 1
+            res = sage_fn(
+                q_in,
+                k_in,
+                v_in,
+                tensor_layout="HND",
+                is_causal=is_causal,
+                sm_scale=kwargs.get("scale"),
+            )
+            return res.to(torch.bfloat16) if restore_bf16 else res
+
+        # 3. Lossless query-chunked SDPA on non-SM80+ devices (MPS, <SM80 CUDA, CPU) or explicit mode
         needs_mem_guard = not (is_cuda and sm_major >= 8 and attn_mask is None)
         use_chunk = (
             (self.mode == "chunked_sdpa" or (self.mode == "auto" and needs_mem_guard))

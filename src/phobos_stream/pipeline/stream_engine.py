@@ -1,4 +1,8 @@
-"""Core diffusion streaming generation engine with batched CFG & mlx_lm pipeline optimizations."""
+"""Legacy v0.1 synthetic shard benchmark engine (`allow_synthetic=True` isolated).
+
+For real HuggingFace Diffusers T2V/I2V/T2I pipelines, use `HFDiffusersStreamEngine`
+(`phobos_stream.pipelines.hf_diffusers`).
+"""
 
 from typing import Callable, Optional, Tuple
 import time

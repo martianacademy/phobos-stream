@@ -7,10 +7,12 @@ from typing import Any, Callable, Dict, Optional, Tuple, Union
 import numpy as np
 
 from phobos_stream.pipeline.stage_runner import StageSequentialRunner, flush_accelerator_memory
+from phobos_stream.pipelines.hf_diffusers_universal import (
+    run_universal_diffusers_streamed,
+    run_wan_i2v_pipeline,
+)
 from phobos_stream.streaming import (
     BlockStreamMode,
-    FirstBlockResidualCache,
-    PhobosAttentionFastpath,
     TorchBlockStreamer,
 )
 from phobos_stream.types import GenerationConfig, PipelineMetrics
@@ -112,9 +114,23 @@ class HFDiffusersStreamEngine:
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> Tuple[np.ndarray, np.ndarray, PipelineMetrics]:
         """Run 3-stage real Diffusers pipeline returning `(rgb_frames, raw_latents_np, metrics)`."""
-        if "wan" in self.model_id.lower():
+        mid_low = self.model_id.lower()
+        if "wan" in mid_low:
+            if config.input_image or "i2v" in mid_low:
+                return run_wan_i2v_pipeline(
+                    self,
+                    config,
+                    _resolve_cached_safetensors,
+                    DEFAULT_WAN_NEGATIVE_PROMPT,
+                    progress_callback,
+                )
             return self._run_wan_pipeline(config, progress_callback)
-        return self._run_generic_image_pipeline(config, progress_callback)
+        return run_universal_diffusers_streamed(
+            self,
+            config,
+            _resolve_cached_safetensors,
+            progress_callback,
+        )
 
     def _encode_umt5_prompt(
         self,
@@ -219,7 +235,7 @@ class HFDiffusersStreamEngine:
                 ram_budget_mb=self.ram_budget_mb,
                 activation_reserve_mb=1536,
                 cache_rel_l1_thresh=eff_thresh,
-                attention_mode=self.attention_mode,
+                attn_mode=self.attention_mode,
             ) as streamer:
                 self.last_tier_summary = streamer.tier_summary
                 pipe_dit = WanPipeline(
@@ -301,68 +317,3 @@ class HFDiffusersStreamEngine:
             metrics.peak_vram_mb = float(torch.cuda.max_memory_allocated(self.device)) / (1024.0 * 1024.0)
         flush_accelerator_memory()
         return frames, raw_latents_holder["latents"], metrics
-
-    def _run_generic_image_pipeline(
-        self,
-        config: GenerationConfig,
-        progress_callback: Optional[Callable[[int, int, str], None]],
-    ) -> Tuple[np.ndarray, np.ndarray, PipelineMetrics]:
-        import torch
-        from diffusers import AutoPipelineForText2Image
-
-        if torch.cuda.is_available() and self.device.startswith("cuda"):
-            torch.cuda.reset_peak_memory_stats(self.device)
-
-        pipe = AutoPipelineForText2Image.from_pretrained(
-            self.model_id,
-            torch_dtype=self.dtype,
-            low_cpu_mem_usage=True,
-        )
-        if hasattr(pipe, "enable_sequential_cpu_offload") and self.device.startswith("cuda"):
-            pipe.enable_sequential_cpu_offload(device=self.device)
-        else:
-            pipe.to(self.device)
-        if hasattr(pipe, "vae") and pipe.vae is not None and hasattr(pipe.vae, "enable_tiling"):
-            pipe.vae.enable_tiling()
-
-        eff_thresh = max(self.cache_rel_l1_thresh, float(config.cache_rel_l1_thresh))
-        backbone = getattr(pipe, "transformer", None) or getattr(pipe, "unet", None)
-        fb_cache = FirstBlockResidualCache(rel_l1_thresh=eff_thresh).attach(backbone) if (backbone is not None and eff_thresh > 0.0) else None
-
-        gen = torch.Generator(device="cpu").manual_seed(int(config.seed))
-        runner = StageSequentialRunner()
-
-        def _denoise(_cond: Any) -> Tuple[Any, int, int]:
-            with PhobosAttentionFastpath(mode=self.attention_mode):
-                out = pipe(
-                    prompt=config.prompt,
-                    negative_prompt=config.negative_prompt or None,
-                    height=config.height,
-                    width=config.width,
-                    num_inference_steps=config.steps,
-                    guidance_scale=config.guidance_scale,
-                    generator=gen,
-                    output_type="np",
-                )
-            imgs = np.clip(out.images * 255.0, 0, 255).astype(np.uint8)
-            return imgs, config.steps, 0
-
-        try:
-            frames, metrics = runner.run(
-                encode_fn=lambda: None,
-                denoise_fn=_denoise,
-                decode_fn=lambda arr: arr,
-                total_steps=config.steps,
-                progress_callback=progress_callback,
-            )
-            if fb_cache is not None:
-                self.last_skipped_steps = int(fb_cache.skipped_steps)
-                metrics.skipped_steps = self.last_skipped_steps
-        finally:
-            if fb_cache is not None:
-                fb_cache.detach()
-        if torch.cuda.is_available() and self.device.startswith("cuda"):
-            metrics.peak_vram_mb = float(torch.cuda.max_memory_allocated(self.device)) / (1024.0 * 1024.0)
-        del pipe
-        flush_accelerator_memory()
-        return frames, frames, metrics

@@ -76,6 +76,7 @@ def serve(
 @click.option("--vram-budget-mb", default=None, type=float, help="Optional GPU VRAM budget in MB")
 @click.option("--ram-budget-mb", default=None, type=float, help="Optional CPU RAM budget in MB")
 @click.option("--cache-thresh", default=0.0, type=float, help="Optional TeaCache / First-Block Residual Cache relative L1 threshold (e.g. 0.12)")
+@click.option("--input-image", default=None, help="Optional conditioning image path or URL for Image-to-Video (I2V)")
 @click.option("--manifest-path", default=None, type=click.Path(exists=True), help="Path to shard manifest.json")
 @click.option("--allow-synthetic", is_flag=True, default=False, help="Explicitly run synthetic benchmark mode")
 @click.option("--output", "-o", default="outputs/generated.mp4", help="Output file path (.mp4 or .png)")
@@ -95,6 +96,7 @@ def generate(
     vram_budget_mb: Optional[float],
     ram_budget_mb: Optional[float],
     cache_thresh: float,
+    input_image: Optional[str],
     manifest_path: Optional[str],
     allow_synthetic: bool,
     output: str,
@@ -111,6 +113,7 @@ def generate(
         steps=steps,
         guidance_scale=guidance_scale,
         cache_rel_l1_thresh=cache_thresh,
+        input_image=input_image,
     )
 
     if hf_model:

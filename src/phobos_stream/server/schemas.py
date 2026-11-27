@@ -16,6 +16,7 @@ class ImageGenerationRequest(BaseModel):
     guidance_scale: float = Field(default=5.0, ge=1.0, le=20.0)
     seed: Optional[int] = Field(default=42)
     cache_rel_l1_thresh: float = Field(default=0.0, ge=0.0, le=0.5, description="Optional TeaCache / FBCache relative L1 threshold")
+    input_image: Optional[str] = Field(default=None, description="Optional image path, URL, or base64 for Image-to-Video (I2V)")
 
 
 class VideoGenerationRequest(BaseModel):
@@ -32,6 +33,7 @@ class VideoGenerationRequest(BaseModel):
     guidance_scale: float = Field(default=5.0, ge=1.0, le=20.0)
     seed: Optional[int] = Field(default=42)
     cache_rel_l1_thresh: float = Field(default=0.0, ge=0.0, le=0.5, description="Optional TeaCache / FBCache relative L1 threshold")
+    input_image: Optional[str] = Field(default=None, description="Optional image path, URL, or base64 for Image-to-Video (I2V)")
 
 
 class GenerationData(BaseModel):

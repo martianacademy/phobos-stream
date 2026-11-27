@@ -196,6 +196,7 @@ def create_app(
             guidance_scale=req.guidance_scale,
             seed=req.seed if req.seed is not None else 42,
             cache_rel_l1_thresh=max(cache_rel_l1_thresh, req.cache_rel_l1_thresh),
+            input_image=req.input_image,
         )
         active_runner: Any = hf_engine if hf_engine is not None else engine
         try:

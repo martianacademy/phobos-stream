@@ -147,9 +147,11 @@ def test_standalone_comfyui_manager_git_clone_import(tmp_path: Path) -> None:
         f"spec = importlib.util.spec_from_file_location('ComfyUI_PhobosStream', {str(cloned_ext / '__init__.py')!r})\n"
         "mod = importlib.util.module_from_spec(spec)\n"
         "spec.loader.exec_module(mod)\n"
-        "assert len(mod.NODE_CLASS_MAPPINGS) == 7, mod.NODE_CLASS_MAPPINGS\n"
+        "assert len(mod.NODE_CLASS_MAPPINGS) == 9, mod.NODE_CLASS_MAPPINGS\n"
         "assert 'PhobosVAEStreamPatcher' in mod.NODE_CLASS_MAPPINGS\n"
         "assert 'PhobosFirstBlockCache' in mod.NODE_CLASS_MAPPINGS\n"
+        "assert 'PhobosCLIPStreamPatcher' in mod.NODE_CLASS_MAPPINGS\n"
+        "assert 'PhobosZeroRAMLoader' in mod.NODE_CLASS_MAPPINGS\n"
         "print('STANDALONE_OK:', sorted(mod.NODE_CLASS_MAPPINGS.keys()))\n"
     )
     env = {"PATH": ""}

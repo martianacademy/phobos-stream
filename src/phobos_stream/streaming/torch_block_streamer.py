@@ -152,7 +152,9 @@ class TorchBlockStreamer:
 
         try:
             if self.safetensors_paths:
-                self._loaders, st_index = build_safetensors_index(self.safetensors_paths)
+                self._loaders, st_index = build_safetensors_index(
+                    self.safetensors_paths, getattr(self.model, "_phobos_key_remap", None)
+                )
             else:
                 st_index = {}
 
@@ -206,7 +208,7 @@ class TorchBlockStreamer:
     ) -> int:
         total = 0
         for rel_name, _, tensor_obj in iter_persistent_module_tensors(blk):
-            if tensor_obj.numel() > 0 and not getattr(tensor_obj, "is_meta", False):
+            if tensor_obj.numel() > 0:
                 total += int(tensor_obj.numel() * tensor_obj.element_size())
             else:
                 resolved = lookup_safetensors_key(st_index, f"{blk_prefix}.{rel_name}")

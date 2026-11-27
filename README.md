@@ -1,7 +1,7 @@
 # <img src="https://raw.githubusercontent.com/martianacademy/phobos-stream/main/assets/icon.png" width="42" align="top" alt="PhobosStream Icon" /> PhobosStream
 
 [![PyPI Version](https://img.shields.io/pypi/v/phobos-stream?color=EE6A3E&label=PyPI)](https://pypi.org/project/phobos-stream/)
-[![Comfy Registry](https://img.shields.io/badge/Comfy_Registry-v0.5.0-EE6A3E)](https://registry.comfy.org/publishers/martianacademy/nodes/comfyui-phobosstream)
+[![Comfy Registry](https://img.shields.io/badge/Comfy_Registry-v1.0.0-EE6A3E)](https://registry.comfy.org/publishers/martianacademy/nodes/comfyui-phobosstream)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/martianacademy/phobos-stream/blob/main/notebooks/MiniMax_H3_Free_T4_PhobosStream.ipynb)
 [![CI Tests](https://github.com/martianacademy/phobos-stream/actions/workflows/ci.yml/badge.svg)](https://github.com/martianacademy/phobos-stream/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://www.python.org/)
@@ -65,7 +65,17 @@ By combining **3-Stage Sequential Offloading** (`Text Encoder -> DiT -> Tiled VA
 | **`PhobosBlockStreamPatcher` + MMDiT FBCache (`0.12`)** | **`0 / 62`** *(3/12 steps skipped)* | **`1,861.5 MB` (`1.82 GiB`)** | **`-92.6%`** | **`10.45 s` (`0.87 s`)** | **`1.16×` faster** | **`36.85 dB` PSNR (`0.9950` cos)** |
 | **`PhobosBlockStreamPatcher` + MMDiT FBCache (`0.18`)** | **`0 / 62`** *(5/12 steps skipped)* | **`1,861.5 MB` (`1.82 GiB`)** | **`-92.6%`** | **`7.92 s` (`0.66 s`)** | **`1.53×` faster** | **`28.05 dB` PSNR (`0.9616` cos)** |
 
-> **Long-Sequence Attention Note:** `PhobosAttentionFastpath` (`attention_mode="auto"`) automatically enables `<SM80` BF16→FP16 fused SDPA (`-1.11 GiB` VRAM on Turing) and lossless query-chunked SDPA (`0.0` max abs diff) on non-Flash devices, running `49`-frame `Wan2.1-14B` (`20,280` tokens) in **`3,863.3 MB` (`3.77 GiB`) Peak VRAM** with **`99.99 dB` PSNR**.
+> **Long-Sequence Attention & Compiled `SageAttention 2.2` Note:** `PhobosAttentionFastpath` (`attention_mode="auto" | "sage2"`) automatically enables `<SM80` BF16→FP16 fused SDPA (`-1.11 GiB` VRAM on Turing), lossless query-chunked SDPA (`0.0` max abs diff) on non-Flash devices, and compiled CUDA `sageattention >= 2.0` (`SM80+`, strictly rejecting lossy `1.x` Triton) — verified at **`1.152×` faster (`88.53` vs `76.88 TFLOP/s`, `66.66 dB` PSNR)** on `20,280`-token 3D self-attention and **`58.92 dB` PSNR** end-to-end on `49`-frame `Wan2.1-14B` (`outputs/modal_phase2_v070_bench/phase2c_sage2_gate_report.json`).
+
+*0e. **`v1.0.0` Zero-RAM Loader, CLIP/UMT5 Streamer, On-GPU `.gguf` Block-Streaming & Universal Diffusers (`T2V + I2V`) Live Benchmarks:***
+
+| New `v1.0.0` Capability | Real Model & Hardware | Stock / Baseline | PhobosStream `v1.0.0` | Speed / Bandwidth Gain | Fidelity (`PSNR / Cosine`) |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **`PhobosZeroRAMLoader`** *(Zero-RAM `.safetensors`)* | `25.64 GB` BF16 `HunyuanVideo-13B` (`24 GiB` cap) | `25,481.7 MB` Heap + ❌ **`CUDA OOM`** (`16.07 s` load) | **`1,047.3 MB` Heap (`-95.9%`)**, **`1,159.5 MB` VRAM** | **`0.17 s` load (`94.5×` faster)** | **`54.12 dB` (`0.9999` cos)** |
+| **`PhobosCLIPStreamPatcher`** *(Text Encoder Streamer)* | `11.37 GB` `UMT5-XXL FP16` (`256k` vocab, NVIDIA A10) | `11,217.6 MB` VRAM (`10.8 GB` stuck after encode) | **`2,004.0 MB` Peak (`8.1 MB` after encode — `-99.9%`)** | **`1.63 s` vs `2.38 s` (`1.46×` faster)** | **`0.0` Diff (`1.0000` cos)** |
+| **On-GPU `.gguf` `Q8_0` Stream** (`GGUFMMapLoader`) | `29.05 GB` `Wan2.1-T2V-14B` (`17f @ 832×480`, A100) | `51.02 s` (`160.9 GB` BF16 PCIe DMA) | **`1,866.0 MB` VRAM**, **`1,046.6 MB` Heap** | **`28.44 s` (`1.79×` faster, `-46.8%` DMA)** | **`54.19 dB` (`0.99997` cos)** |
+| **On-GPU `.gguf` `Q4_K_S` Stream** (`Q4_K + Q5_K`) | `29.05 GB` `Wan2.1-T2V-14B` (`17f @ 832×480`, A100) | `51.02 s` (`160.9 GB` BF16 PCIe DMA) | **`2,190.4 MB` VRAM**, **`1,046.5 MB` Heap** | **`20.85 s` (`2.45×` faster, `-70.5%` DMA)** | **`33.60 dB` (`0.9952` cos)** |
+| **Universal Diffusers `T2V + I2V`** (`LTX-Video`) | `15 GB` BF16 `Lightricks/LTX-Video` (`8.0 GiB` RTX cap) | ❌ **`CUDA OOM`** (`8,188.3 MB` > `8.0 GiB`) | **`1,189.8 MB` (`T2V`) / `1,190.5 MB` (`I2V`) VRAM** | **`17.36 s` (`T2V`) / `17.65 s` (`I2V`)** | `46.06 dB` I2V frame-0 lock |
 
 *1. **Real `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` (~14.5 GB BF16: `UMT5-XXL` + 30-block `WanDiT` + 3D `WanVAE`)** under an enforced **`8.00 GiB` CUDA VRAM limit** (`torch.cuda.set_per_process_memory_fraction`, native widescreen **`832×480`**, `25 frames`, `40 steps`, `flow_shift=3.0` via standalone FastAPI `/v1/videos/generations`):*
 
@@ -97,6 +107,10 @@ By combining **3-Stage Sequential Offloading** (`Text Encoder -> DiT -> Tiled VA
 | **6. Phobos `hybrid_stream` (`8 GB` Budget — 16/24 GB Mac)** | **8,138.8 MB** | **`69.2%`** | 6,924.5 MB (`20/32` blocks) | **`49.57 s` (`6.20 s`)** | **`54.60 s` (`1.37×` faster)** | **BF16 (`38.18 dB` vs Block-Stream, `-50.4%` SSD reads)** |
 
 *\*`68.20 s` on cold SSD page-cache (`50.69 s` denoise = `1.41×` faster than `block_stream`); `54.05 s` (`1.39×` faster, `28.89 dB` PSNR) with warm cache + `First-Block Cache (0.25)` (`outputs/mlx_hybrid_bench/mlx_zimage_hybrid_report.json`).*
+
+* **Apple Silicon Native `MLXWanVideoStreamer` (`Wan2.1-1.3B` 3D Video DiT — `2.84 GB` BF16, 30 3D-RoPE blocks, `512×320 × 17` frames × `8` steps on Apple M4 Max Metal GPU, `outputs/mlx_wan_video_bench/mlx_wan21_video_report.json`):**
+  * **PyTorch MPS `WanTransformer3DModel` Reference:** `3,184.7 MB` Peak Metal, `7.33 s` (`0.916 s/step`).
+  * **Phobos `MLXWanVideoStreamer` (`block_stream`, `0/30` resident):** **`819.1 MB` Peak Metal (`75.8%` saved vs `3,389.7 MB` monolithic)** in **`7.48 s` (`0.935 s/step`)**, **`62.49 dB` PSNR (`0.999976` cos)** vs PyTorch MPS!
 
 ### Key Architectural Mechanisms
 1. **Native BF16/FP16 Zero-Copy `mmap` (`MMapTensorLoader`)**: Slices tensor byte-ranges directly from `.safetensors` on NVMe SSD into native `torch.bfloat16` (`read_torch_tensor`) and `mlx.core.bfloat16` (`read_mlx_array`) without expanding weights to FP32 in host RAM.
@@ -151,37 +165,42 @@ uv pip install -e ".[dev]"
 pytest -v
 ```
 
-### 2. Python API: Stream Any Real PyTorch DiT in 4 Lines
+### 2. One-Line Python SDK: Stream Any PyTorch Model (`.safetensors` or `.gguf`)
 
 ```python
+import phobos_stream
+
+# 1-line streaming + Zero-DMA TeaCache + lossless SDPA / SageAttention 2.2 on ANY nn.Module:
+model = phobos_stream.stream(model, mode="cpu_offload", cache_thresh=0.12)
+output = model(latents, timestep, context)
+phobos_stream.unstream(model)
+
+# Or zero-RAM `meta` skeleton streaming directly from `.safetensors` or quantized `.gguf` (`Q8_0`/`Q4_K`):
 import torch
-from phobos_stream.streaming import BlockStreamMode, TorchBlockStreamer
+from phobos_stream import BlockStreamMode, TorchBlockStreamer
 
 with torch.device("meta"):
-    model = MyDiffusionTransformer().to(torch.bfloat16)
+    dit = MyDiffusionTransformer().to(torch.bfloat16)
 
-with TorchBlockStreamer(
-    model,
-    compute_device="auto",
-    mode=BlockStreamMode.MMAP_STREAM,
-    safetensors_paths=["model_bf16.safetensors"],
-):
-    output = model(latents, timestep, context)
+with TorchBlockStreamer(dit, mode=BlockStreamMode.MMAP_STREAM, safetensors_paths=["wan2.1-14b-Q8_0.gguf"]):
+    output = dit(latents, timestep, context)
 ```
 
-### 3. CLI & OpenAI / Sora-Compatible Video & Image API Gateway
+### 3. CLI & OpenAI / Sora-Compatible Video (`T2V` + `I2V`) & Image API Gateway
 
 ```bash
-# Launch standalone Diffusers video/image server under a strict 3-tier VRAM/RAM budget + Zero-DMA TeaCache:
+# Launch standalone universal Diffusers server (Wan2.1 T2V/I2V, LTX-Video T2V/I2V, FLUX, HunyuanVideo):
 phobos-stream serve --port 8088 \
-  --hf-model Wan-AI/Wan2.1-T2V-1.3B-Diffusers \
-  --stream-mode hybrid_budget \
-  --vram-budget-mb 3200 \
+  --hf-model Lightricks/LTX-Video \
+  --stream-mode cpu_offload \
   --cache-thresh 0.12
 
-# Or index a local .safetensors checkpoint directory into a zero-copy virtual manifest:
-phobos-stream shard --model-dir /path/to/models --architecture wan2.1
-phobos-stream serve --port 8088 --manifest-path /path/to/models/shards/manifest.json --backend auto
+# One-shot Image-to-Video (I2V) from CLI:
+phobos-stream generate \
+  --hf-model Lightricks/LTX-Video \
+  --input-image keyframe.png \
+  --prompt "Smooth cinematic camera tracking across red sand dunes at sunset" \
+  --width 512 --height 320 --frames 17 --steps 12 --output out_i2v.mp4
 ```
 
 ---

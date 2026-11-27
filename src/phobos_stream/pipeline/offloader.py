@@ -1,4 +1,8 @@
-"""Stage-wise sequential offloader and block-by-block streaming coordinator."""
+"""Legacy v0.1 synthetic shard benchmark offloader.
+
+Production PyTorch/ComfyUI/GGUF models use `TorchBlockStreamer` (`phobos_stream.stream`),
+and Apple Silicon Metal models use `MLXBlockStreamer` / `MLXWanVideoStreamer`.
+"""
 
 import gc
 import hashlib

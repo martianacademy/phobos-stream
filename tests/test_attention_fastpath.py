@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from phobos_stream.streaming.attention_fastpath import PhobosAttentionFastpath, query_chunked_sdpa
+from phobos_stream.streaming.attention_fastpath import (
+    PhobosAttentionFastpath,
+    _is_sage2_version,
+    query_chunked_sdpa,
+)
 
 
 def test_query_chunked_sdpa_is_mathematically_exact() -> None:
@@ -46,3 +50,13 @@ def test_attention_fastpath_context_installs_and_cleanly_restores_sdpa() -> None
         assert torch.allclose(expected, out, atol=1e-6)
 
     assert F.scaled_dot_product_attention is orig_fn
+
+
+def test_sageattention_version_gate_rejects_v1_triton_and_accepts_v2_cuda() -> None:
+    assert not _is_sage2_version("1.0.6")
+    assert not _is_sage2_version("0.9.0")
+    assert not _is_sage2_version("")
+    assert _is_sage2_version("2.2.0")
+    assert _is_sage2_version("2.2.0+cu128")
+    fp = PhobosAttentionFastpath(mode="sage2")
+    assert fp.enabled

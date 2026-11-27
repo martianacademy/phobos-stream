@@ -1,4 +1,8 @@
-"""Model architecture adapters mapping safetensors weights to universal DiT blocks."""
+"""Legacy v0.1 synthetic shard benchmark adapters (isolated to `allow_synthetic=True` tests).
+
+For production models, use `phobos_stream.stream(model)` (`TorchBlockStreamer`),
+`HFDiffusersStreamEngine`, ComfyUI nodes, or `MLXWanVideoStreamer` / `MLXBlockStreamer`.
+"""
 
 from phobos_stream.adapters.base import BaseModelAdapter
 from phobos_stream.adapters.cogvideo_adapter import CogVideoXAdapter
